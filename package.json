@@ -1,0 +1,22 @@
+{
+  "name": "node-red-contrib-flow-manager",
+  "version": "0.3.0",
+  "node-red": {
+    "nodes": {
+      "flow-manager": "flow-manager.js"
+    }
+  },
+  "scripts": {
+    "start": "build "
+  },
+  "dependencies": {
+    "body-parser": "^1.0.0",
+    "eol": "^0.9.1",
+    "fs-promise": "^2.0.3",
+    "jsonata": "*",
+    "log4js": "~1.0.1",
+    "request": "^2.88.0",
+    "request-promise": "^4.2.2",
+    "serve-static": "^1.0.0"
+  }
+}
