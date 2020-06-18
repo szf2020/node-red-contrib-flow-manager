@@ -81,6 +81,22 @@
             refreshSaveFlowButtonAndTabsState();
         });
 
+        RED.comms.subscribe('flow-manager/flow-manager-envnodes-override-attempt', function (topic, obj) {
+            const myNotification = RED.notify(
+                `Warning!<br/>Detected user attempt to change envnodes controlled properties.<br/>Don't worry, these changes were not applied.`, {
+                type: "error",
+                timeout: 12000,
+                buttons: [
+                    {
+                        text: "Thanks",
+                        click: function(e) {
+                            myNotification.close();
+                        }
+                    }
+                ]
+            });
+        });
+
         RED.events.on('deploy', function() {
             fetch(`flow-manager/deployed-changes`, {
                 method: "POST",

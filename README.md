@@ -37,27 +37,47 @@ The nodes will be stored in the following subdirectories of your Node-RED path a
 It's a good idea to add these paths to your version control system. 
 
     ##### New Buttons:
-    ![New Buttons Image](new_buttons.png)
+    ![New Buttons Image](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/new_buttons.png)
     
     Beside the standard "Deploy" button, 2 new buttons buttons should appear as well after installing this module:
     * Save Flow
     * Filter Flows
     
-    #### ![Save Flow](save_flow.png)
+    #### ![Save Flow](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/save_flow.png)
     * Saves only the `flow` you are currently on (the open workspace/tab) and `config nodes`.
     * Automatically "clicks" the standard **Deploy** button.
     
-    #### ![Filter Flows](filter_flows.png)
+    #### ![Filter Flows](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows.png)
     * Allows selecting which flows node-red will load, and which will be ignored and not loaded, **not only in Node-RED's UI, also in it's NodeJS process.** <br/>
     * Unselected flows are NOT deleted, only "ignored" until you select them again using `Filter Flows`.
     * Filtering configuration is stored in `flow_visibility.json` file under your Node-RED path.
     * if `flow_visibility.json` file does not exist, or exists and contains an empty JSON array, all flows are loaded and no filtering is done.
-    * ![Filter Flows Popup](filter_flows_popup.png)
+    * ![Filter Flows Popup](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows_popup.png)
     
+    #### envnodes
+    envnodes allows configuration of nodes using an external source.<br/>
+    example:
+    create "envnodes/default.jsonata" in your Node-RED project directory and put these contents:
+    ```
+  (
+     $process := require('process');
+     $config := require($process.cwd() & "/someConfig.json");
+     {
+       /* mqtt config node */
+       "21bcf36a.891e4d": {
+          "broker": $config.mqtt.broker,
+          "port": $config.mqtt.port
+       }
+     };
+  )
+    ```
+    The result would be that your mqtt config node will get receive values from an external configuration file, which is useful in many cases.
+    
+    Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
     
 #### Known Issues
 1. Change Detection:<br>
-    #### ![Modified Flow Marker](change_marker.png)
+    #### ![Modified Flow Marker](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/change_marker.png)
     Modifying any flow or subflow within Node-RED's UI marks unsaved flows and enables the "Save Flow" button so it becomes clickable.<br/>
     However this feature does not always mark your tabs correctly, (e.g clicking Ctrl-Z to revert a modification happened on certain flow while you are working on a different flow)<br/>
     So when that happens, just move any node slightly on the tab you would like to edit, and the "Save Flow" button will become enabled again.
