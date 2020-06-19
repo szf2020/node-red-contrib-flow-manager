@@ -81,7 +81,20 @@
             refreshSaveFlowButtonAndTabsState();
         });
 
-        RED.comms.subscribe('flow-manager/flow-manager-envnodes-override-attempt', function (topic, obj) {
+        RED.comms.subscribe('flow-manager/flow-manager-envnodes-override-attempt', function (topic, envNodePropsChangedByUser) {
+
+            // Revert properties on view (those defined by envnodes)
+            for(const nodeId of Object.keys(envNodePropsChangedByUser)) {
+                const node = RED.nodes.node(nodeId);
+                const envNodeCfg = envNodePropsChangedByUser[nodeId];
+
+                for(const envNodeCfgKey of Object.keys(envNodeCfg)) {
+                    node[envNodeCfgKey] = envNodeCfg[envNodeCfgKey];
+                }
+                RED.editor.updateNodeProperties(node);
+                RED.view.redraw();
+            }
+
             const myNotification = RED.notify(
                 `Warning!<br/>Detected user attempt to change envnodes controlled properties.<br/>Don't worry, these changes were not applied.`, {
                 type: "error",

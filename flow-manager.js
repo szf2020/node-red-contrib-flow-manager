@@ -49,17 +49,20 @@ const originalSetFlows = PRIVATERED.runtime.flows.setFlows;
 let RED;
 PRIVATERED.runtime.flows.setFlows = function newSetFlows(data) {
     let count = 0;
-    let userTriedToChangeEnvNodeProperty = false;
+    let envNodePropsChangedByUser = {};
     if(directories.nodesEnvConfig) {
         for(const node of data.flows.flows) {
             if(directories.nodesEnvConfig[node.id]) {
                 count++;
                 for(const key of Object.keys(directories.nodesEnvConfig[node.id])) {
                     const val = directories.nodesEnvConfig[node.id][key];
-                    if(node[key] !== val) {
-                        userTriedToChangeEnvNodeProperty = true;
-                        node[key] = val;
-                    }
+                    try {
+                        if(JSON.stringify(node[key]) !== JSON.stringify(val)) {
+                            if(!envNodePropsChangedByUser[node.id]) envNodePropsChangedByUser[node.id] = {};
+                            envNodePropsChangedByUser[node.id][key] = val;
+                            node[key] = val;
+                        }
+                    } catch (e) {}
                 }
                 if(count >= Object.keys(directories.nodesEnvConfig).length) {
                     break;
@@ -67,8 +70,8 @@ PRIVATERED.runtime.flows.setFlows = function newSetFlows(data) {
             }
         }
     }
-    if(userTriedToChangeEnvNodeProperty) {
-        RED.comms.publish('flow-manager/flow-manager-envnodes-override-attempt', {});
+    if(Object.keys(envNodePropsChangedByUser).length>0) {
+        RED.comms.publish('flow-manager/flow-manager-envnodes-override-attempt', envNodePropsChangedByUser);
     }
     return originalSetFlows.apply(PRIVATERED.runtime.flows, arguments);
 }
