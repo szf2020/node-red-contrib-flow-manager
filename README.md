@@ -71,7 +71,7 @@ create "envnodes/default.jsonata" in your Node-RED project directory and put the
      };
   )
 ```
-The result would be that your mqtt config node will get receive values from an external configuration file, which is useful in many cases.
+The result would be that your mqtt config node will use values from an external configuration file, which is useful in some cases.
 
 Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
     

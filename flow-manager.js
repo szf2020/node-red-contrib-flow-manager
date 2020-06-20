@@ -1,7 +1,7 @@
 const path = require('path')
     , async = require('asyncawait/async')
     , await = require('asyncawait/await')
-    , fsPromise = require('fs-promise')
+    , fs = require('fs-extra')
     , bodyParser = require('body-parser')
     , log4js = require('log4js')
     , serveStatic = require('serve-static')
@@ -86,12 +86,12 @@ function writeFlowFile(filePath, flowObject) {
     } else {
         str = stringifyFormattedFileJson(flowObject);
     }
-    return fsPromise.writeFile(filePath, str);
+    return fs.outputFile(filePath, str);
 }
 
 const readFlowFile = async(function (filePath) {
 
-    const fileContentsStr = await(fsPromise.readFile(filePath, 'utf-8'));
+    const fileContentsStr = await(fs.readFile(filePath, 'utf-8'));
 
     const indexOfExtension = filePath.lastIndexOf('.');
     const fileExt = filePath.substring(indexOfExtension+1).toLowerCase();
@@ -104,7 +104,7 @@ const readFlowFile = async(function (filePath) {
         await(writeFlowFile(newFilePathWithNewExt, finalObject));
 
         // Delete old file
-        await(fsPromise.remove(filePath));
+        await(fs.remove(filePath));
     }
 
     return finalObject;
@@ -118,9 +118,7 @@ module.exports = async(function(_RED) {
     const refreshDirectories = async(function () {
         let basePath;
         if(RED.settings.editorTheme.projects.enabled) {
-            const redConfig = JSON.parse(
-                await(fsPromise.readFile(path.join(RED.settings.userDir, '.config.json'), 'utf-8'))
-            );
+            const redConfig = await(fs.readJson(path.join(RED.settings.userDir, '.config.json')))
             const activeProject = redConfig.projects.activeProject;
 
             const activeProjectPath = path.join(RED.settings.userDir, 'projects', activeProject);
@@ -138,7 +136,7 @@ module.exports = async(function(_RED) {
             flowFile: path.resolve(basePath, RED.settings.flowFile || 'flows_'+os.hostname()+'.json'),
         });
         directories.flowVisibilityJsonFilePath = path.resolve(directories.basePath, 'flow_visibility.json')
-        
+
         directories.defaultEnvNodeFilePath = path.resolve(directories.envNodesDir, 'default.jsonata');
         directories.currentEnvNodeFilePath = path.resolve(directories.envNodesDir, process.env.NODE_ENV + '.jsonata');
 
@@ -147,8 +145,7 @@ module.exports = async(function(_RED) {
         // Read flow-manager settings
         let needToSaveFlowManagerSettings = false;
         try {
-            const fileStr = await(fsPromise.readFile(directories.flowVisibilityJsonFilePath, 'utf-8'));
-            const fileJson = JSON.parse(fileStr);
+            const fileJson = await(fs.readJson(directories.flowVisibilityJsonFilePath));
 
             // Backwards compatibility
             if(Array.isArray(fileJson)) {
@@ -169,7 +166,7 @@ module.exports = async(function(_RED) {
             }
         }
         if(needToSaveFlowManagerSettings) {
-            await(fsPromise.writeFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings)));
+            await(fs.outputFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings)));
         }
 
         directories.configNodesFilePath = directories.configNodesFilePathWithoutExtension + '.' + flowManagerSettings.fileFormat;
@@ -178,7 +175,7 @@ module.exports = async(function(_RED) {
         directories.nodesEnvConfig = {};
         for(const cfgPath of [directories.defaultEnvNodeFilePath, directories.currentEnvNodeFilePath]) {
             try {
-                const fileContents = await(fsPromise.readFile(cfgPath, 'UTF-8'));
+                const fileContents = await(fs.readFile(cfgPath, 'UTF-8'));
                 try {
                     const jsonataResult = jsonata(fileContents).evaluate({require:require});
                     Object.assign(directories.nodesEnvConfig, jsonataResult);
@@ -196,13 +193,8 @@ module.exports = async(function(_RED) {
             });
         }
 
-        if(!await(fsPromise.exists(directories.flowsDir))) {
-            await(fsPromise.mkdir(directories.flowsDir))
-        }
-
-        if(!await(fsPromise.exists(directories.subflowsDir))) {
-            await(fsPromise.mkdir(directories.subflowsDir))
-        }
+        await(fs.ensureDir(directories.flowsDir));
+        await(fs.ensureDir(directories.subflowsDir));
     });
     await(refreshDirectories());
 
@@ -277,14 +269,14 @@ module.exports = async(function(_RED) {
             res.send({error: err})
         }
     }));
-    
+
     const loadFlows = async(function (flowsToShow = null) {
 
         const flowsDir = directories.flowsDir;
 
         let flowJsonSum = [];
 
-        let items = await(fsPromise.readdir(flowsDir)).filter(item => ()=>{
+        let items = await(fs.readdir(flowsDir)).filter(item => ()=>{
             const ext = path.extname(item).toLowerCase();
             return ext === '.json' || ext === '.yaml';
         });
@@ -315,7 +307,7 @@ module.exports = async(function(_RED) {
         // read subflows
         const subflowsDir = directories.subflowsDir;
 
-        const subflowItems = await(fsPromise.readdir(subflowsDir)).filter(item=>{
+        const subflowItems = await(fs.readdir(subflowsDir)).filter(item=>{
             const itemLC = item.toLowerCase();
             return itemLC.endsWith('.yaml') || itemLC.endsWith('.json');
         });
@@ -366,7 +358,7 @@ module.exports = async(function(_RED) {
 
     RED.httpAdmin.get( '/'+nodeName+'/flows.json', async(function (req, res) {
         try {
-            let flowFiles = await(fsPromise.readdir(path.join(directories.basePath, "flows")));
+            let flowFiles = await(fs.readdir(path.join(directories.basePath, "flows")));
             flowFiles = flowFiles.filter(file=>file.toLowerCase().match(/.*\.(json)|(yaml)$/g));
             res.send(flowFiles);
         } catch(e) {
@@ -378,7 +370,7 @@ module.exports = async(function(_RED) {
         const patchObj = req.body;
         try {
             Object.assign(flowManagerSettings, patchObj);
-            await(fsPromise.writeFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings)));
+            await(fs.outputFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings)));
             await(loadFlows(flowManagerSettings.filter));
             res.send({});
         } catch(e) {
@@ -396,19 +388,18 @@ module.exports = async(function(_RED) {
             const masterFlowFilePath = directories.flowFile;
 
             // Check if we need to migrate from "fat" flow json file to managed mode.
-            if( await(fsPromise.readdir(directories.flowsDir)).length===0 &&
-                await(fsPromise.readdir(directories.subflowsDir)).length===0
+            if( await(fs.readdir(directories.flowsDir)).length===0 &&
+                await(fs.readdir(directories.subflowsDir)).length===0
             ) {
                 nodeLogger.info('First boot with flow-manager detected, starting migration process...');
-                return await(fsPromise.readFile(masterFlowFilePath, 'utf-8'));
+                return await(fs.readJson(masterFlowFilePath));
             }
         } catch(e) {}
         return null;
     });
 
-    const masterFlowFileContentsToMigrate = await(checkIfMigrationIsRequried());
-    if(masterFlowFileContentsToMigrate) {
-        const masterFlowFile = JSON.parse(masterFlowFileContentsToMigrate);
+    const masterFlowFile = await(checkIfMigrationIsRequried());
+    if(masterFlowFile) {
 
         const flowNodes = {};
         const globalConfigNodes = [], simpleNodes = [];
@@ -444,7 +435,7 @@ module.exports = async(function(_RED) {
         await(PRIVATERED.nodes.setFlows([], 'full')),
 
         // Delete flows json file (will be replaced with our flow manager logic (filters & combined separate flow json files)
-        fsPromise.unlink(directories.flowFile).then(function () {
+        fs.remove(directories.flowFile).then(function () {
             nodeLogger.info('Deleted previous flows json file.');
             return Promise.resolve();
         }).catch(function () {return Promise.resolve();})
