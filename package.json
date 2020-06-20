@@ -18,6 +18,10 @@
     "log4js": "~1.0.1",
     "serve-static": "^1.0.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/monogoto.io/node-red-contrib-flow-manager.git"
+  },
   "keywords": [
     "node-red",
     "node",
