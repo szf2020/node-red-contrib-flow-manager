@@ -110,18 +110,25 @@ const readFlowFile = async(function (filePath) {
     return finalObject;
 })
 
+const readActiveProject = async(function() {
+    try {
+        const redConfig = await(fs.readJson(path.join(RED.settings.userDir, '.config.json')))
+        return redConfig.projects.activeProject;
+    } catch (e) {
+        return null;
+    }
+});
+
 const directories = {};
-module.exports = async(function(_RED) {
-    RED = _RED;
+const main = async(function() {
     let changedWorkspacesDeployed = new Set();
 
     const refreshDirectories = async(function () {
-        let basePath;
+        let basePath, project = null;
         if(RED.settings.editorTheme.projects.enabled) {
-            const redConfig = await(fs.readJson(path.join(RED.settings.userDir, '.config.json')))
-            const activeProject = redConfig.projects.activeProject;
+            project = await(readActiveProject());
 
-            const activeProjectPath = path.join(RED.settings.userDir, 'projects', activeProject);
+            const activeProjectPath = path.join(RED.settings.userDir, 'projects', project);
 
             basePath = activeProjectPath;
         } else {
@@ -134,6 +141,7 @@ module.exports = async(function(_RED) {
             flowsDir: path.resolve(basePath, 'flows'),
             envNodesDir: path.resolve(basePath, 'envnodes'),
             flowFile: path.resolve(basePath, RED.settings.flowFile || 'flows_'+os.hostname()+'.json'),
+            project: project
         });
         directories.flowVisibilityJsonFilePath = path.resolve(directories.basePath, 'flow_visibility.json')
 
@@ -177,7 +185,10 @@ module.exports = async(function(_RED) {
             try {
                 const fileContents = await(fs.readFile(cfgPath, 'UTF-8'));
                 try {
-                    const jsonataResult = jsonata(fileContents).evaluate({require:require});
+                    const jsonataResult = jsonata(fileContents).evaluate({
+                        require: require,
+                        basePath: directories.basePath
+                    });
                     Object.assign(directories.nodesEnvConfig, jsonataResult);
                 } catch(e) {
                     nodeLogger.error('JSONata parsing failed for env nodes:\n', e);
@@ -196,79 +207,6 @@ module.exports = async(function(_RED) {
         await(fs.ensureDir(directories.flowsDir));
         await(fs.ensureDir(directories.subflowsDir));
     });
-    await(refreshDirectories());
-
-    RED.httpAdmin.post('/' + nodeName + '/deployed-changes', bodyParser.json(), function(req, res) {
-        const workspacesChanged = req.body;
-        if(workspacesChanged && workspacesChanged.length) {
-            workspacesChanged.forEach(function(item) {
-                changedWorkspacesDeployed.add(item);
-            });
-        }
-        RED.comms.publish('flow-manager/deployed-changes', Array.from(changedWorkspacesDeployed));
-        res.send(Array.from(changedWorkspacesDeployed));
-    });
-
-    RED.httpAdmin.get('/' + nodeName + '/deployed-changes', function(req, res) {
-        res.send(Array.from(changedWorkspacesDeployed));
-    });
-
-    RED.httpAdmin.post('/' + nodeName + '/save/:id', bodyParser.json(), async(function(req, res) {
-
-        const flowJson = req.body.flow;
-        const configNodesJson = req.body.configNodes;
-
-        const nodesSavedEnvConfig = directories.savedEnvConfig;
-
-        for(const cfgNode of configNodesJson) {
-            if(nodesSavedEnvConfig.hasOwnProperty(cfgNode.id)) {
-                Object.assign(cfgNode, nodesSavedEnvConfig[cfgNode.id]);
-            }
-        }
-
-        let flowNode;
-        let flowNodeIndex=0;
-        for(let i=0;i<flowJson.length;i++) {
-            const node = flowJson[i];
-            if(nodesSavedEnvConfig.hasOwnProperty(node.id)) {
-                Object.assign(node, nodesSavedEnvConfig[node.id]);
-            }
-
-            if(node.id === req.params.id) {
-                flowNode = node;
-                flowNodeIndex = i;
-            }
-        }
-
-        changedWorkspacesDeployed.delete(flowNode.id);
-        RED.comms.publish('flow-manager/deployed-changes', Array.from(changedWorkspacesDeployed));
-
-        const folderName = flowNode.type === 'tab'?'flows':'subflows';
-        const flowsDir = path.resolve(directories.basePath, folderName);
-        const flowName = flowNode.label || flowNode.name; // if it's a subflow, then the correct property is 'name'
-        const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
-
-        // Fixing json, must have wires property, even if empty. otherwise node-red gets confused.
-        const nodesJson = flowJson.slice(0,flowNodeIndex).concat(flowJson.slice(flowNodeIndex+1, flowJson.length)).map(item=>{
-            // Add empty wires only if it's not a config node.
-            if(!item.hasOwnProperty('wires') && req.body.allConfigNodeIds && req.body.allConfigNodeIds.indexOf(item.id) === -1) {
-                item.wires = [];
-            }
-            return item;
-        });
-        const resultFlowJsonToSave = [flowNode].concat(nodesJson);
-
-        try {
-            // save flow file
-            await(writeFlowFile(flowFilePath, resultFlowJsonToSave));
-
-            // save config nodes file
-            await(writeFlowFile(directories.configNodesFilePath, configNodesJson));
-            res.send({success: true});
-        } catch(err) {
-            res.send({error: err})
-        }
-    }));
 
     const loadFlows = async(function (flowsToShow = null) {
 
@@ -355,6 +293,86 @@ module.exports = async(function(_RED) {
         }
     });
 
+    const checkIfMigrationIsRequried = async(function () {
+        try {
+            // Check if we need to migrate from "fat" flow json file to managed mode.
+            if( await(fs.readdir(directories.flowsDir)).length===0 &&
+                await(fs.readdir(directories.subflowsDir)).length===0
+            ) {
+                nodeLogger.info('First boot with flow-manager detected, starting migration process...');
+                return true;
+            }
+        } catch(e) {}
+        return false;
+    });
+
+    const startFlowManager = async(function () {
+        await(refreshDirectories());
+
+        if(await(checkIfMigrationIsRequried())) {
+            const masterFlowFile = await(fs.readJson(directories.flowFile));
+
+            const flowNodes = {};
+            const globalConfigNodes = [], simpleNodes = [];
+
+            for (const node of masterFlowFile) {
+                if(node.type === 'tab' || node.type === 'subflow') flowNodes[node.id] = [node];
+                else if(!node.z || node.z.length === 0) globalConfigNodes.push(node);
+                else simpleNodes.push(node);
+            }
+
+            for(const node of simpleNodes) {
+                if(flowNodes[node.z]) flowNodes[node.z].push(node);
+            }
+
+            // finally write files
+            const fileWritePromises = [writeFlowFile(directories.configNodesFilePath, globalConfigNodes)];
+            for(const flowId of Object.keys(flowNodes)) {
+                const nodesInFlow = flowNodes[flowId];
+                const topNode = nodesInFlow[0];
+                const flowName = topNode.label || topNode.name; // label on tabs ,
+
+                const destinationFile = path.resolve(directories.basePath, topNode.type === 'tab'? 'flows':'subflows', encodeFileName(flowName)+'.'+flowManagerSettings.fileFormat);
+
+                fileWritePromises.push(
+                    writeFlowFile(destinationFile, nodesInFlow)
+                );
+            }
+            await(Promise.all(fileWritePromises));
+            nodeLogger.info('flow-manager migration complete.');
+        }
+
+        // Delete flows json file (will be replaced with our flow manager logic (filters & combined separate flow json files)
+        fs.remove(directories.flowFile).then(function () {
+            nodeLogger.info('Deleted previous flows json file.');
+            return Promise.resolve();
+        }).catch(function () {return Promise.resolve();})
+
+        const eraseMainFlowsAndLoadActualFlows = async(function eraseMainFlowsAndLoadActualFlows() {
+            await(PRIVATERED.nodes.setFlows([], 'full'));
+            await(loadFlows());
+        });
+
+        if(directories.project) {
+            RED.events.once('runtime-event', async(function () {
+                await(eraseMainFlowsAndLoadActualFlows());
+            }));
+        } else {
+            await(eraseMainFlowsAndLoadActualFlows());
+        }
+    });
+
+    await(startFlowManager());
+    if(directories.project) {
+        let lastProject = await(readActiveProject());
+        fs.watch(path.join(RED.settings.userDir, '.config.json'), async(() => {
+            const newProject = await(readActiveProject());
+            if(lastProject != newProject) {
+                lastProject = newProject;
+                await(startFlowManager());
+            }
+        }));
+    }
 
     RED.httpAdmin.get( '/'+nodeName+'/flows.json', async(function (req, res) {
         try {
@@ -378,68 +396,84 @@ module.exports = async(function(_RED) {
         }
     }));
 
-    // serve libs
-    RED.httpAdmin.use( '/'+nodeName+'/favicon.ico', serveStatic(path.join(__dirname, "static", "favicon.ico")) );
-    RED.httpAdmin.use( '/'+nodeName+'/node_modules', serveStatic(path.join(__dirname, "node_modules")) );
-    RED.httpAdmin.use( '/'+nodeName+'/flow_visibility.json', serveStatic(path.join(directories.basePath, "flow_visibility.json")) );
 
-    const checkIfMigrationIsRequried = async(function () {
-        try {
-            const masterFlowFilePath = directories.flowFile;
-
-            // Check if we need to migrate from "fat" flow json file to managed mode.
-            if( await(fs.readdir(directories.flowsDir)).length===0 &&
-                await(fs.readdir(directories.subflowsDir)).length===0
-            ) {
-                nodeLogger.info('First boot with flow-manager detected, starting migration process...');
-                return await(fs.readJson(masterFlowFilePath));
-            }
-        } catch(e) {}
-        return null;
+    RED.httpAdmin.post('/' + nodeName + '/deployed-changes', bodyParser.json(), function(req, res) {
+        const workspacesChanged = req.body;
+        if(workspacesChanged && workspacesChanged.length) {
+            workspacesChanged.forEach(function(item) {
+                changedWorkspacesDeployed.add(item);
+            });
+        }
+        RED.comms.publish('flow-manager/deployed-changes', Array.from(changedWorkspacesDeployed));
+        res.send(Array.from(changedWorkspacesDeployed));
     });
 
-    const masterFlowFile = await(checkIfMigrationIsRequried());
-    if(masterFlowFile) {
+    RED.httpAdmin.get('/' + nodeName + '/deployed-changes', function(req, res) {
+        res.send(Array.from(changedWorkspacesDeployed));
+    });
 
-        const flowNodes = {};
-        const globalConfigNodes = [], simpleNodes = [];
+    RED.httpAdmin.post('/' + nodeName + '/save/:id', bodyParser.json(), async(function(req, res) {
 
-        for (const node of masterFlowFile) {
-            if(node.type === 'tab' || node.type === 'subflow') flowNodes[node.id] = [node];
-            else if(!node.z || node.z.length === 0) globalConfigNodes.push(node);
-            else simpleNodes.push(node);
+        const flowJson = req.body.flow;
+        const configNodesJson = req.body.configNodes;
+
+        const nodesSavedEnvConfig = directories.savedEnvConfig;
+
+        for(const cfgNode of configNodesJson) {
+            if(nodesSavedEnvConfig.hasOwnProperty(cfgNode.id)) {
+                Object.assign(cfgNode, nodesSavedEnvConfig[cfgNode.id]);
+            }
         }
 
-        for(const node of simpleNodes) {
-            if(flowNodes[node.z]) flowNodes[node.z].push(node);
+        let flowNode;
+        let flowNodeIndex=0;
+        for(let i=0;i<flowJson.length;i++) {
+            const node = flowJson[i];
+            if(nodesSavedEnvConfig.hasOwnProperty(node.id)) {
+                Object.assign(node, nodesSavedEnvConfig[node.id]);
+            }
+
+            if(node.id === req.params.id) {
+                flowNode = node;
+                flowNodeIndex = i;
+            }
         }
 
-        // finally write files
-        const fileWritePromises = [writeFlowFile(directories.configNodesFilePath, globalConfigNodes)];
-        for(const flowId of Object.keys(flowNodes)) {
-            const nodesInFlow = flowNodes[flowId];
-            const topNode = nodesInFlow[0];
-            const flowName = topNode.label || topNode.name; // label on tabs ,
+        changedWorkspacesDeployed.delete(flowNode.id);
+        RED.comms.publish('flow-manager/deployed-changes', Array.from(changedWorkspacesDeployed));
 
-            const destinationFile = path.resolve(directories.basePath, topNode.type === 'tab'? 'flows':'subflows', encodeFileName(flowName)+'.'+flowManagerSettings.fileFormat);
+        const folderName = flowNode.type === 'tab'?'flows':'subflows';
+        const flowsDir = path.resolve(directories.basePath, folderName);
+        const flowName = flowNode.label || flowNode.name; // if it's a subflow, then the correct property is 'name'
+        const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
 
-            fileWritePromises.push(
-                writeFlowFile(destinationFile, nodesInFlow)
-            );
+        // Fixing json, must have wires property, even if empty. otherwise node-red gets confused.
+        const nodesJson = flowJson.slice(0,flowNodeIndex).concat(flowJson.slice(flowNodeIndex+1, flowJson.length)).map(item=>{
+            // Add empty wires only if it's not a config node.
+            if(!item.hasOwnProperty('wires') && req.body.allConfigNodeIds && req.body.allConfigNodeIds.indexOf(item.id) === -1) {
+                item.wires = [];
+            }
+            return item;
+        });
+        const resultFlowJsonToSave = [flowNode].concat(nodesJson);
+
+        try {
+            // save flow file
+            await(writeFlowFile(flowFilePath, resultFlowJsonToSave));
+
+            // save config nodes file
+            await(writeFlowFile(directories.configNodesFilePath, configNodesJson));
+            res.send({success: true});
+        } catch(err) {
+            res.send({error: err})
         }
-        await(Promise.all(fileWritePromises));
-        nodeLogger.info('flow-manager migration complete.');
-    }
+    }));
 
-    Promise.all([
-        await(PRIVATERED.nodes.setFlows([], 'full')),
-
-        // Delete flows json file (will be replaced with our flow manager logic (filters & combined separate flow json files)
-        fs.remove(directories.flowFile).then(function () {
-            nodeLogger.info('Deleted previous flows json file.');
-            return Promise.resolve();
-        }).catch(function () {return Promise.resolve();})
-    ]);
-
-    await(loadFlows());
+    // serve libs
+    RED.httpAdmin.use( '/'+nodeName+'/flow_visibility.json', serveStatic(path.join(directories.basePath, "flow_visibility.json")) );
 });
+
+module.exports = function(_RED) {
+    RED = _RED;
+    main();
+};

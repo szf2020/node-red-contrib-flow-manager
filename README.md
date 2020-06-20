@@ -18,7 +18,7 @@ Install via npm
 
 ```shell
 $ cd ~/.node-red
-$ npm node-red-contrib-flow-manager
+$ npm install node-red-contrib-flow-manager
 # Restart node-red
 ```
 
@@ -60,8 +60,7 @@ example:
 create "envnodes/default.jsonata" in your Node-RED project directory and put these contents:
 ```
   (
-     $process := require('process');
-     $config := require($process.cwd() & "/someConfig.json");
+     $config := require(basePath & "/someConfig.json");
      {
        /* mqtt config node */
        "21bcf36a.891e4d": {
@@ -72,6 +71,9 @@ create "envnodes/default.jsonata" in your Node-RED project directory and put the
   )
 ```
 The result would be that your mqtt config node will use values from an external configuration file, which is useful in some cases.
+
+Note `basePath` is the path to your Node-RED directory.<br/>
+When using Node-RED's "project mode", the value is the project folder path. 
 
 Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
     
@@ -121,7 +123,6 @@ See comparison below
         ]
     }
     ```
-    
     
 ### Known Issues
 1. Change Detection:<br>
