@@ -44,36 +44,95 @@ const PRIVATERED = (function requireExistingNoderedInstance() {
 
 const nodeName = path.basename(__filename).split('.')[0];
 const nodeLogger = log4js.getLogger('NodeRed FlowManager');
+let RED;
 
 // Restoring envnode override values after deploy, so UI cannot change them.
 const originalSetFlows = PRIVATERED.runtime.flows.setFlows;
-let RED;
 PRIVATERED.runtime.flows.setFlows = function newSetFlows(data) {
-    let count = 0;
-    let envNodePropsChangedByUser = {};
-    if(directories.nodesEnvConfig) {
-        for(const node of data.flows.flows) {
-            if(directories.nodesEnvConfig[node.id]) {
-                count++;
-                for(const key of Object.keys(directories.nodesEnvConfig[node.id])) {
-                    const val = directories.nodesEnvConfig[node.id][key];
-                    try {
-                        if(JSON.stringify(node[key]) !== JSON.stringify(val)) {
-                            if(!envNodePropsChangedByUser[node.id]) envNodePropsChangedByUser[node.id] = {};
-                            envNodePropsChangedByUser[node.id][key] = val;
-                            node[key] = val;
-                        }
-                    } catch (e) {}
-                }
-                if(count >= Object.keys(directories.nodesEnvConfig).length) {
-                    break;
-                }
+
+    const allFlows = {"global":[]}, // global contians global config-nodes
+        mapFlowIdToNameAndType = {} // type is either "tab" or "subflow"
+
+    const envNodePropsChangedByUser = {};
+
+    for(const node of data.flows.flows) {
+        //
+        // Enforce envnodes consistency
+        //
+        if (directories.nodesEnvConfig[node.id]) {
+            for (const key of Object.keys(directories.nodesEnvConfig[node.id])) {
+                const val = directories.nodesEnvConfig[node.id][key];
+                try {
+                    if (JSON.stringify(node[key]) !== JSON.stringify(val)) {
+                        if (!envNodePropsChangedByUser[node.id]) envNodePropsChangedByUser[node.id] = {};
+                        envNodePropsChangedByUser[node.id][key] = val;
+                        node[key] = val;
+                    }
+                } catch (e) {}
             }
         }
+        //
+        // Fill flows, subflows, config-nodes
+        //
+        if (node.type === 'tab' || node.type === 'subflow') {
+            if (!allFlows[node.id]) allFlows[node.id] = [];
+            allFlows[node.id].push(node);
+            mapFlowIdToNameAndType[node.id] = {type:node.type, name: node.label || node.name};
+        } else if (!node.z) {
+            // global (config-node)
+            allFlows.global.push(node);
+        } else {
+            // simple node
+            if(!allFlows[node.z]) allFlows[node.z] = [];
+            allFlows[node.z].push(node);
+        }
     }
+
+    // If envnode property changed, send back original values to revert on Node-RED UI as well.
     if(Object.keys(envNodePropsChangedByUser).length>0) {
         RED.comms.publish('flow-manager/flow-manager-envnodes-override-attempt', envNodePropsChangedByUser);
     }
+
+    setTimeout(async(function saveFlowFiles() {
+
+        for(const flowId of Object.keys(allFlows)) {
+
+            // Cloning flow, we potentially save a different flow file than the one we deploy.
+            // this is because for every property overriden by envnode, we store an empty string "" in the actual file
+            // we do that because we don't want the flow files to change every the envnode properties change.
+            const flowNodes = JSON.parse(JSON.stringify(allFlows[flowId]));
+            const flowDetails = mapFlowIdToNameAndType[flowId];
+
+            for(const node of flowNodes) {
+                // Set properties used by envnodes to = "" empty string
+                if(directories.savedEnvConfig.hasOwnProperty(node.id)) {
+                    Object.assign(node, directories.savedEnvConfig[node.id]);
+                }
+                // delete credentials
+                delete node.credentials;
+            }
+
+            let folderName;
+            if(flowDetails) {
+                if(flowDetails.type === 'subflow') folderName = 'subflows';
+                // flow - tab
+                else folderName = 'flows';
+            } else {
+                // global (config-nodes)
+                folderName = '.';
+            }
+
+            const flowsDir = path.resolve(directories.basePath, folderName);
+            const flowName = flowId === 'global' ? 'config-nodes' : flowDetails.name; // if it's a subflow, then the correct property is 'name'
+            const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
+
+            try {
+                // save flow file
+                await(writeFlowFile(flowFilePath, flowNodes));
+            } catch(err) {}
+        }
+    }),0);
+
     return originalSetFlows.apply(PRIVATERED.runtime.flows, arguments);
 }
 
@@ -121,7 +180,6 @@ const readActiveProject = async(function() {
 
 const directories = {};
 const main = async(function() {
-    let changedWorkspacesDeployed = new Set();
 
     const refreshDirectories = async(function () {
         let basePath, project = null;
@@ -393,79 +451,6 @@ const main = async(function() {
             res.send({});
         } catch(e) {
             res.status(404).send();
-        }
-    }));
-
-
-    RED.httpAdmin.post('/' + nodeName + '/deployed-changes', bodyParser.json(), function(req, res) {
-        const workspacesChanged = req.body;
-        if(workspacesChanged && workspacesChanged.length) {
-            workspacesChanged.forEach(function(item) {
-                changedWorkspacesDeployed.add(item);
-            });
-        }
-        RED.comms.publish('flow-manager/deployed-changes', Array.from(changedWorkspacesDeployed));
-        res.send(Array.from(changedWorkspacesDeployed));
-    });
-
-    RED.httpAdmin.get('/' + nodeName + '/deployed-changes', function(req, res) {
-        res.send(Array.from(changedWorkspacesDeployed));
-    });
-
-    RED.httpAdmin.post('/' + nodeName + '/save/:id', bodyParser.json(), async(function(req, res) {
-
-        const flowJson = req.body.flow;
-        const configNodesJson = req.body.configNodes;
-
-        const nodesSavedEnvConfig = directories.savedEnvConfig;
-
-        for(const cfgNode of configNodesJson) {
-            if(nodesSavedEnvConfig.hasOwnProperty(cfgNode.id)) {
-                Object.assign(cfgNode, nodesSavedEnvConfig[cfgNode.id]);
-            }
-        }
-
-        let flowNode;
-        let flowNodeIndex=0;
-        for(let i=0;i<flowJson.length;i++) {
-            const node = flowJson[i];
-            if(nodesSavedEnvConfig.hasOwnProperty(node.id)) {
-                Object.assign(node, nodesSavedEnvConfig[node.id]);
-            }
-
-            if(node.id === req.params.id) {
-                flowNode = node;
-                flowNodeIndex = i;
-            }
-        }
-
-        changedWorkspacesDeployed.delete(flowNode.id);
-        RED.comms.publish('flow-manager/deployed-changes', Array.from(changedWorkspacesDeployed));
-
-        const folderName = flowNode.type === 'tab'?'flows':'subflows';
-        const flowsDir = path.resolve(directories.basePath, folderName);
-        const flowName = flowNode.label || flowNode.name; // if it's a subflow, then the correct property is 'name'
-        const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
-
-        // Fixing json, must have wires property, even if empty. otherwise node-red gets confused.
-        const nodesJson = flowJson.slice(0,flowNodeIndex).concat(flowJson.slice(flowNodeIndex+1, flowJson.length)).map(item=>{
-            // Add empty wires only if it's not a config node.
-            if(!item.hasOwnProperty('wires') && req.body.allConfigNodeIds && req.body.allConfigNodeIds.indexOf(item.id) === -1) {
-                item.wires = [];
-            }
-            return item;
-        });
-        const resultFlowJsonToSave = [flowNode].concat(nodesJson);
-
-        try {
-            // save flow file
-            await(writeFlowFile(flowFilePath, resultFlowJsonToSave));
-
-            // save config nodes file
-            await(writeFlowFile(directories.configNodesFilePath, configNodesJson));
-            res.send({success: true});
-        } catch(err) {
-            res.send({error: err})
         }
     }));
 

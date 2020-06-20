@@ -36,23 +36,12 @@ The nodes will be stored in the following subdirectories of your Node-RED path a
 * `/config-nodes.json` (global config nodes will be stored here)
 It's a good idea to add these paths to your version control system. 
 
-    ##### New Buttons:
-    ![New Buttons Image](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/new_buttons.png)
-    
-    Beside the standard "Deploy" button, 2 new buttons buttons should appear as well after installing this module:
-    * Save Flow
-    * Filter Flows
-    
-    #### ![Save Flow](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/save_flow.png)
-    * Saves only the `flow` you are currently on (the open workspace/tab) and `config nodes`.
-    * Automatically "clicks" the standard **Deploy** button.
-    
-    #### ![Filter Flows](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows.png)
-    * Allows selecting which flows node-red will load, and which will be ignored and not loaded, **not only in Node-RED's UI, also in it's NodeJS process.** <br/>
-    * Unselected flows are NOT deleted, only "ignored" until you select them again using `Filter Flows`.
-    * Filtering configuration is stored in `flow_visibility.json` file under your Node-RED path.
-    * if `flow_visibility.json` file does not exist, or exists and contains an empty JSON array, all flows are loaded and no filtering is done.
-    * ![Filter Flows Popup](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows_popup.png)
+#### ![Filter Flows](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows.png)
+* Allows selecting which flows Node-RED will load, and which will be ignored and not loaded, **not only in Node-RED's UI, also in it's NodeJS process.** <br/>
+* Unselected flows are NOT deleted, only "ignored" until you select them again using `Filter Flows`.
+* Filtering configuration is stored in `flow_visibility.json` file under your Node-RED path.
+* if `flow_visibility.json` file does not exist, or exists but malformed, or contains an empty JSON array, then all flows will be loaded and no filtering is done.
+* ![Filter Flows Popup](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows_popup.png)
     
 ### envnodes
 envnodes allows configuration of nodes using an external source.<br/>
@@ -125,9 +114,4 @@ See comparison below
     ```
     
 ### Known Issues
-1. Change Detection:<br>
-    #### ![Modified Flow Marker](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/change_marker.png)
-    Modifying any flow or subflow within Node-RED's UI marks unsaved flows and enables the "Save Flow" button so it becomes clickable.<br/>
-    However this feature does not always mark your tabs correctly, (e.g clicking Ctrl-Z to revert a modification happened on certain flow while you are working on a different flow)<br/>
-    So when that happens, just move any node slightly on the tab you would like to edit, and the "Save Flow" button will become enabled again.
-2. After deleting/renaming a flow/subflow via the Node-RED UI, it is required to delete the unwanted flow/subflow file as well.
+1. If you wish to delete/rename a flow or subflow, you have to delete/rename the actual file and then restart Node-RED.

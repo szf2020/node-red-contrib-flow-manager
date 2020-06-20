@@ -10,13 +10,6 @@
         padding: 3.5pt;
     }
 
-    .red-ui-tab-save-flow-indicator.ui-draggable > a.red-ui-tab-label {
-        background-image: linear-gradient(#99ee99, #aaffaa);
-    }
-    .red-ui-tab-save-flow-indicator.ui-draggable > a.red-ui-tab-label:hover {
-        background-image: linear-gradient(#81d781, #93e893);
-    }
-
     .toolbar-button.toolbar-button-disabled {
         color: #999 !important;
         background-color: #444 !important;
@@ -34,52 +27,7 @@
 
 <script type="text/javascript">
 
-    RED.actions.add("flow-manager:save-flow", function() {
-        $('.flow-manager-save-button').click();
-    });
-
-    let workspacesWithLocalChanges = new Set();
-    let workspacesWithDeployedChanges = new Set();
-
-    function refreshSaveFlowButtonAndTabsState() {
-        const $saveButton = $('.flow-manager-save-button');
-        let allowSaving = workspacesWithLocalChanges.has(RED.workspaces.active()) || workspacesWithDeployedChanges.has(RED.workspaces.active());
-
-        if(allowSaving) {
-            $saveButton.prop('disabled', false);
-            $saveButton.removeClass('toolbar-button-disabled');
-            $saveButton.removeClass('disabled');
-        } else {
-            $saveButton.prop('disabled', true);
-            $saveButton.addClass('toolbar-button-disabled');
-            $saveButton.addClass('disabled');
-        }
-
-        const changedWorkspacesSelectors = Array.from(new Set([...workspacesWithLocalChanges, ...workspacesWithDeployedChanges])).map(tabId=>'li#red-ui-tab-'+tabId.replace('.','-'));
-        $('li.red-ui-tab').removeClass('red-ui-tab-save-flow-indicator');
-        $(changedWorkspacesSelectors.join(',')).addClass('red-ui-tab-save-flow-indicator');
-    }
     (function() {
-        let workspacesWithLocalChangesPrevStep = new Set();
-
-        function onWorkspaceChange(e) {
-            // Startup only (listen once)
-            RED.events.off('workspace:change', onWorkspaceChange);
-
-            fetch(`flow-manager/deployed-changes`)
-                .then(function(response) {
-                    return response.json();
-                })
-                .then(function (theJsonArray) {
-                    workspacesWithDeployedChanges = new Set(theJsonArray);
-                    refreshSaveFlowButtonAndTabsState();
-                });
-        }
-        RED.events.on('workspace:change', onWorkspaceChange);
-        RED.comms.subscribe('flow-manager/deployed-changes', function (topic, obj) {
-            workspacesWithDeployedChanges = new Set(obj);
-            refreshSaveFlowButtonAndTabsState();
-        });
 
         RED.comms.subscribe('flow-manager/flow-manager-envnodes-override-attempt', function (topic, envNodePropsChangedByUser) {
 
@@ -97,50 +45,17 @@
 
             const myNotification = RED.notify(
                 `Warning!<br/>Detected user attempt to change envnodes controlled properties.<br/>Don't worry, these changes were not applied.`, {
-                type: "error",
-                timeout: 12000,
-                buttons: [
-                    {
-                        text: "Thanks",
-                        click: function(e) {
-                            myNotification.close();
+                    type: "error",
+                    timeout: 12000,
+                    buttons: [
+                        {
+                            text: "Thanks",
+                            click: function(e) {
+                                myNotification.close();
+                            }
                         }
-                    }
-                ]
-            });
-        });
-
-        RED.events.on('deploy', function() {
-            fetch(`flow-manager/deployed-changes`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json; charset=utf-8",
-                },
-                body: JSON.stringify(Array.from(workspacesWithLocalChangesPrevStep))
-            })
-                .then(function(response) {
-                    return response.json();
-                })
-                .then(function(json) {
-                    workspacesWithLocalChanges = new Set();
-                    workspacesWithDeployedChanges = new Set(json);
-                    refreshSaveFlowButtonAndTabsState();
-                })
-        });
-
-        RED.events.on('nodes:change', function(e){
-            let allowSaving = e.dirty;
-            workspacesWithLocalChangesPrevStep = JSON.parse(JSON.stringify(Array.from(workspacesWithLocalChanges)));
-            if(allowSaving) {
-                workspacesWithLocalChanges.add(RED.workspaces.active());
-            } else {
-                workspacesWithLocalChanges.delete(RED.workspaces.active());
-            }
-            refreshSaveFlowButtonAndTabsState();
-        });
-
-        RED.events.on('workspace:change', function(e){
-            refreshSaveFlowButtonAndTabsState();
+                    ]
+                });
         });
     })();
 
@@ -160,7 +75,6 @@
             })
             .then(function (theJson) {
                 if(theJson.error) throw theJson.error;
-                workspacesWithLocalChanges.delete(RED.workspaces.active());
                 const myNotification = RED.notify("Saved successfully.", {
                     timeout: 1500,
                     buttons: [
@@ -245,7 +159,6 @@
                 configNodes: exportConfigNodes(),
                 allConfigNodeIds: allConfigNodeIds
             }).then(e=>{
-                refreshSaveFlowButtonAndTabsState();
                 const oldNodeRedButton = $('#btn-deploy'); // 0.20 or less
                 if(oldNodeRedButton.length) {
                     oldNodeRedButton.click();
@@ -263,27 +176,12 @@
     if(_nr1Header.length) {
         _nr1Header.prepend(`
         <li>
-            <button onclick="saveCurrentFlow()" class="button-group red-ui-deploy-button toolbar-button toolbar-button-disabled flow-manager-save-button" href="#">
-                <i class="fa fa-code-fork"></i> Save Flow
-            </button>
-        </li>
-
-        <li>
             <button class="button-group red-ui-deploy-button toolbar-button flow-manager-filter-flows-button" href="#">
                 <i class="fa fa-filter"></i> Filter Flows</button>
             </button>
         </li>
         `);
     } else {
-        // Add "save flow" button
-        $('.header-toolbar').prepend(`
-        <span>
-            <span>
-                <button class="toolbar-button toolbar-button-disabled flow-manager-save-button" onclick="saveCurrentFlow()"><i class="fa fa-code-fork"></i> Save Flow</button>
-            </span>
-        </span>
-        `);
-
         // Add "filter flows" button
         $('.header-toolbar').prepend(`
         <span>
