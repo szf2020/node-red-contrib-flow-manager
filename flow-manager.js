@@ -8,6 +8,7 @@ const path = require('path')
     , os = require("os")
     , jsonata = require('jsonata')
     , eol = require('eol')
+    , YAML = require('js-yaml')
 ;
 
 function encodeFileName(origName) {
@@ -25,7 +26,7 @@ function encodeFileName(origName) {
     // Characters not allowed: \ / : * ? " < > |
 }
 
-function stringifyNodesFileJson(nodes) {
+function stringifyFormattedFileJson(nodes) {
     const str = JSON.stringify(nodes, undefined, 2);
     return eol.auto(str);
 }
@@ -76,6 +77,39 @@ PRIVATERED.runtime.flows.setFlows = function newSetFlows(data) {
     return originalSetFlows.apply(PRIVATERED.runtime.flows, arguments);
 }
 
+const flowManagerSettings = {};
+
+function writeFlowFile(filePath, flowObject) {
+    let str;
+    if(flowManagerSettings.fileFormat === 'yaml') {
+        str = YAML.safeDump(flowObject);
+    } else {
+        str = stringifyFormattedFileJson(flowObject);
+    }
+    return fsPromise.writeFile(filePath, str);
+}
+
+const readFlowFile = async(function (filePath) {
+
+    const fileContentsStr = await(fsPromise.readFile(filePath, 'utf-8'));
+
+    const indexOfExtension = filePath.lastIndexOf('.');
+    const fileExt = filePath.substring(indexOfExtension+1).toLowerCase();
+
+    const finalObject = fileExt === 'yaml'? YAML.safeLoad(fileContentsStr) : JSON.parse(fileContentsStr);
+
+    if(fileExt !== flowManagerSettings.fileFormat) {
+        // File needs conversion
+        const newFilePathWithNewExt = filePath.substring(0, indexOfExtension) + '.' + flowManagerSettings.fileFormat;
+        await(writeFlowFile(newFilePathWithNewExt, finalObject));
+
+        // Delete old file
+        await(fsPromise.remove(filePath));
+    }
+
+    return finalObject;
+})
+
 const directories = {};
 module.exports = async(function(_RED) {
     RED = _RED;
@@ -98,14 +132,47 @@ module.exports = async(function(_RED) {
 
         Object.assign(directories, {
             basePath: basePath,
-            configNodesFilePath: path.resolve(basePath, 'config-nodes.json'),
             subflowsDir: path.resolve(basePath, 'subflows'),
             flowsDir: path.resolve(basePath, 'flows'),
             envNodesDir: path.resolve(basePath, 'envnodes'),
-            flowFile: path.resolve(basePath, RED.settings.flowFile || 'flows_'+os.hostname()+'.json')
+            flowFile: path.resolve(basePath, RED.settings.flowFile || 'flows_'+os.hostname()+'.json'),
         });
+        directories.flowVisibilityJsonFilePath = path.resolve(directories.basePath, 'flow_visibility.json')
+        
         directories.defaultEnvNodeFilePath = path.resolve(directories.envNodesDir, 'default.jsonata');
         directories.currentEnvNodeFilePath = path.resolve(directories.envNodesDir, process.env.NODE_ENV + '.jsonata');
+
+        directories.configNodesFilePathWithoutExtension = path.resolve(basePath, 'config-nodes');
+
+        // Read flow-manager settings
+        let needToSaveFlowManagerSettings = false;
+        try {
+            const fileStr = await(fsPromise.readFile(directories.flowVisibilityJsonFilePath, 'utf-8'));
+            const fileJson = JSON.parse(fileStr);
+
+            // Backwards compatibility
+            if(Array.isArray(fileJson)) {
+                needToSaveFlowManagerSettings = true;
+                flowManagerSettings.filter = fileJson;
+            } else if(typeof fileJson === 'object') {
+                Object.assign(flowManagerSettings, fileJson);
+            }
+        } catch (e) {}
+        finally {
+            if(!Array.isArray(flowManagerSettings.filter)) {
+                needToSaveFlowManagerSettings = true;
+                flowManagerSettings.filter = [];
+            }
+            if(!flowManagerSettings.fileFormat) {
+                needToSaveFlowManagerSettings = true;
+                flowManagerSettings.fileFormat = 'json';
+            }
+        }
+        if(needToSaveFlowManagerSettings) {
+            await(fsPromise.writeFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings)));
+        }
+
+        directories.configNodesFilePath = directories.configNodesFilePathWithoutExtension + '.' + flowManagerSettings.fileFormat;
 
         // Loading ENV configuration for nodes
         directories.nodesEnvConfig = {};
@@ -187,7 +254,7 @@ module.exports = async(function(_RED) {
         const folderName = flowNode.type === 'tab'?'flows':'subflows';
         const flowsDir = path.resolve(directories.basePath, folderName);
         const flowName = flowNode.label || flowNode.name; // if it's a subflow, then the correct property is 'name'
-        const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.json');
+        const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
 
         // Fixing json, must have wires property, even if empty. otherwise node-red gets confused.
         const nodesJson = flowJson.slice(0,flowNodeIndex).concat(flowJson.slice(flowNodeIndex+1, flowJson.length)).map(item=>{
@@ -201,76 +268,77 @@ module.exports = async(function(_RED) {
 
         try {
             // save flow file
-            await(fsPromise.writeFile(flowFilePath, stringifyNodesFileJson(resultFlowJsonToSave, undefined, 2)));
+            await(writeFlowFile(flowFilePath, resultFlowJsonToSave));
 
             // save config nodes file
-            await(fsPromise.writeFile(directories.configNodesFilePath, stringifyNodesFileJson(configNodesJson, undefined, 2)));
+            await(writeFlowFile(directories.configNodesFilePath, configNodesJson));
             res.send({success: true});
         } catch(err) {
             res.send({error: err})
         }
     }));
-
-    // write flows
-    const flowVisibilityJsonFilePath = path.resolve(directories.basePath, 'flow_visibility.json');
+    
     const loadFlows = async(function (flowsToShow = null) {
 
         const flowsDir = directories.flowsDir;
 
         let flowJsonSum = [];
-        let items = await(fsPromise.readdir(flowsDir)).filter(item => item.toLowerCase().endsWith('.json'));
+
+        let items = await(fsPromise.readdir(flowsDir)).filter(item => ()=>{
+            const ext = path.extname(item).toLowerCase();
+            return ext === '.json' || ext === '.yaml';
+        });
+
         if(flowsToShow === null) {
-            try {
-                flowsToShow = JSON.parse(
-                    await(fsPromise.readFile(flowVisibilityJsonFilePath, 'utf-8'))
-                );
-            } catch(e) {}
+            flowsToShow = flowManagerSettings.filter;
         }
         nodeLogger.info('Flow visibility file state:', flowsToShow);
 
         // Hide flows only if array is not empty
         if(flowsToShow && flowsToShow.length) {
-            const jsonFilesToBeVisible = flowsToShow.map(flow=>flow+'.json');
-            items = items.filter(item=>jsonFilesToBeVisible.indexOf(item) !== -1);
+            items = items.filter(item=>{
+                const itemWithoutExt = item.substring(0, item.lastIndexOf('.'));
+                return flowsToShow.indexOf(itemWithoutExt) !== -1;
+            });
         }
 
+        // read flows
         for(const algoFlowFileName of items) {
             try {
-                const flowJsonFileContents = JSON.parse(
-                    await(fsPromise.readFile(path.join(flowsDir, algoFlowFileName), 'utf-8'))
-                );
+                const flowJsonFileContents = await(readFlowFile(path.join(flowsDir, algoFlowFileName)));
                 flowJsonSum = flowJsonSum.concat(flowJsonFileContents);
             } catch (e) {
                 nodeLogger.error('Could not load flow ' + algoFlowFileName + '\r\n' + e.stack||e);
             }
         }
 
-        // write subflows
+        // read subflows
         const subflowsDir = directories.subflowsDir;
 
-        const subflowItems = await(fsPromise.readdir(subflowsDir)).filter(item=>item.toLowerCase().endsWith('.json'));
+        const subflowItems = await(fsPromise.readdir(subflowsDir)).filter(item=>{
+            const itemLC = item.toLowerCase();
+            return itemLC.endsWith('.yaml') || itemLC.endsWith('.json');
+        });
         for(const subflowFileName of subflowItems) {
             try {
-                const flowJsonFileContents = JSON.parse(
-                    await(fsPromise.readFile(path.join(subflowsDir, subflowFileName), 'utf-8'))
-                );
+                const flowJsonFileContents = await(readFlowFile(path.join(subflowsDir, subflowFileName)));
+
                 flowJsonSum = flowJsonSum.concat(flowJsonFileContents);
             } catch (e) {
                 nodeLogger.error('Could not load subflow ' + subflowFileName + '\r\n' + e.stack||e);
             }
         }
 
-        // write config nodes
-        const configNodesPath = path.resolve(directories.basePath, 'config-nodes.json');
+        // read config nodes
         try {
-            const configNodes = JSON.parse(
-                await(fsPromise.readFile(configNodesPath))
-            );
+            let configNodes;
+            try {
+                configNodes = await(readFlowFile(directories.configNodesFilePathWithoutExtension+'.json'));
+            } catch (e) {
+                configNodes = await(readFlowFile(directories.configNodesFilePathWithoutExtension+'.yaml'));
+            }
             flowJsonSum = flowJsonSum.concat(configNodes);
-        } catch(e) {
-            nodeLogger.error('Could not load global config-nodes file ' + configNodesPath + '\r\n' + e.stack||e);
-        }
-
+        } catch(e) {}
 
         const nodesEnvConfig = directories.nodesEnvConfig;
 
@@ -299,18 +367,19 @@ module.exports = async(function(_RED) {
     RED.httpAdmin.get( '/'+nodeName+'/flows.json', async(function (req, res) {
         try {
             let flowFiles = await(fsPromise.readdir(path.join(directories.basePath, "flows")));
-            flowFiles = flowFiles.filter(file=>file.toLowerCase().endsWith('.json'));
+            flowFiles = flowFiles.filter(file=>file.toLowerCase().match(/.*\.(json)|(yaml)$/g));
             res.send(flowFiles);
         } catch(e) {
             res.status(404).send();
         }
     }));
 
-    RED.httpAdmin.put( '/'+nodeName+'/flow_visibility.json', bodyParser.json(), async(function (req, res) {
-        const flowsToShow = req.body;
+    RED.httpAdmin.patch( '/'+nodeName+'/flow_visibility.json', bodyParser.json(), async(function (req, res) {
+        const patchObj = req.body;
         try {
-            await(fsPromise.writeFile(flowVisibilityJsonFilePath, stringifyNodesFileJson(flowsToShow, null, 2)));
-            await(loadFlows(flowsToShow));
+            Object.assign(flowManagerSettings, patchObj);
+            await(fsPromise.writeFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings)));
+            await(loadFlows(flowManagerSettings.filter));
             res.send({});
         } catch(e) {
             res.status(404).send();
@@ -355,16 +424,16 @@ module.exports = async(function(_RED) {
         }
 
         // finally write files
-        const fileWritePromises = [fsPromise.writeFile(directories.configNodesFilePath, stringifyNodesFileJson(globalConfigNodes, undefined, 2))];
+        const fileWritePromises = [writeFlowFile(directories.configNodesFilePath, globalConfigNodes)];
         for(const flowId of Object.keys(flowNodes)) {
             const nodesInFlow = flowNodes[flowId];
             const topNode = nodesInFlow[0];
             const flowName = topNode.label || topNode.name; // label on tabs ,
 
-            const destinationFile = path.resolve(directories.basePath, topNode.type === 'tab'? 'flows':'subflows', encodeFileName(flowName)+'.json');
+            const destinationFile = path.resolve(directories.basePath, topNode.type === 'tab'? 'flows':'subflows', encodeFileName(flowName)+'.'+flowManagerSettings.fileFormat);
 
             fileWritePromises.push(
-                fsPromise.writeFile(destinationFile, stringifyNodesFileJson(nodesInFlow, undefined, 2))
+                writeFlowFile(destinationFile, nodesInFlow)
             );
         }
         await(Promise.all(fileWritePromises));

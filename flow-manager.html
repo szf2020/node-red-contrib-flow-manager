@@ -327,8 +327,8 @@
             url: 'flow-manager/flow_visibility.json',
             contentType: "application/json",
             dataType:'json',
-            data: JSON.stringify(flowsToShow),
-            type: 'PUT',
+            data: JSON.stringify({filter:flowsToShow}),
+            type: 'PATCH',
             error: function(error) {
                 alert(`Failed to filter algos ${error}`);
             },
@@ -357,7 +357,9 @@
             Promise.all([
                 getJsonPromise('flow-manager/flows.json'),
                 getJsonPromise('flow-manager/flow_visibility.json').catch(e=>Promise.resolve([]))
-            ]).then(([flowsArray, flowsToShow])=>{
+            ]).then(([flowsArray, flowVisibility])=>{
+                const flowsToShow = flowVisibility.filter;
+
                 const $selectEl = $('#flow-manager-flows-dialog-options');
                 $selectEl.empty();
 

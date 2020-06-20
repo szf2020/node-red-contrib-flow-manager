@@ -54,11 +54,11 @@ It's a good idea to add these paths to your version control system.
     * if `flow_visibility.json` file does not exist, or exists and contains an empty JSON array, all flows are loaded and no filtering is done.
     * ![Filter Flows Popup](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows_popup.png)
     
-    #### envnodes
-    envnodes allows configuration of nodes using an external source.<br/>
-    example:
-    create "envnodes/default.jsonata" in your Node-RED project directory and put these contents:
-    ```
+### envnodes
+envnodes allows configuration of nodes using an external source.<br/>
+example:
+create "envnodes/default.jsonata" in your Node-RED project directory and put these contents:
+```
   (
      $process := require('process');
      $config := require($process.cwd() & "/someConfig.json");
@@ -70,12 +70,60 @@ It's a good idea to add these paths to your version control system.
        }
      };
   )
+```
+The result would be that your mqtt config node will get receive values from an external configuration file, which is useful in many cases.
+
+Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
+    
+### YAML flow file format
+You can configure flow-manager to load/save flow files in YAML format instead oj JSON, by modifying file `flow_visibility.json` as such:
+```
+{
+  ...
+  "fileFormat": "yaml"
+  ...
+}
+```
+The advantage is the code within function node becomes easier to read when inspecting the flow file itself.<br/>
+See comparison below
+* #### YAML
     ```
-    The result would be that your mqtt config node will get receive values from an external configuration file, which is useful in many cases.
+    - id: 493f0b3.b3b48f4
+      type: function
+      z: 70dd6be0.e35274
+      name: 'SomeFuncNode'
+      func: |-
+          const str = "hello";
+          console.log(str + ' world');
+          msg.payload = 'test';
+          return msg;
+      outputs: 1
+      noerr: 0
+      x: 580
+      'y': 40
+      wires:
+        - []
+    ```
+* #### JSON
+    ```
+    {
+        "id": "493f0b3.b3b48f4",
+        "type": "function",
+        "z": "70dd6be0.e35274",
+        "name": "SomeFuncNode",
+        "func": "const str = \"hello\";\nconsole.log(str + ' world');\nmsg.payload = 'test';\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 580,
+        "y": 40,
+        "wires": [
+            []
+        ]
+    }
+    ```
     
-    Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
     
-#### Known Issues
+### Known Issues
 1. Change Detection:<br>
     #### ![Modified Flow Marker](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/change_marker.png)
     Modifying any flow or subflow within Node-RED's UI marks unsaved flows and enables the "Save Flow" button so it becomes clickable.<br/>
