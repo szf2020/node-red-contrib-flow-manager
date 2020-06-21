@@ -291,6 +291,7 @@ async function main() {
         // read flows
         for(const algoFlowFileName of items) {
             try {
+                if(!algoFlowFileName.toLowerCase().match(/.*\.(json)|(yaml)$/g)) continue;
                 const flowJsonFileContents = await readFlowFile(path.join(flowsDir, algoFlowFileName));
                 flowJsonSum = flowJsonSum.concat(flowJsonFileContents);
             } catch (e) {
