@@ -1,4 +1,4 @@
-#### 0.5.0 Flow handling enhancements
+#### 0.5.1 Flow handling enhancements
 
 - Flow renaming/removal triggered automatically by deploy.<br/>No need to delete/rename the flow in the file-system manually.
 - Renamed "Show Flows" in filter popup to "Load Flows", better representing what it does.
