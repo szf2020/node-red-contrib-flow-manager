@@ -7,7 +7,19 @@ const path = require('path')
     , jsonata = require('jsonata')
     , eol = require('eol')
     , YAML = require('js-yaml')
+    , child_process = require('child_process')
 ;
+
+function execShellCommand(cmd) {
+    return new Promise((resolve, reject) => {
+        child_process.exec(cmd, (error, stdout, stderr) => {
+            if (error) {
+                reject(new Error(stderr||stdout));
+            }
+            resolve(stdout);
+        });
+    });
+}
 
 function encodeFileName(origName) {
     return origName.
@@ -44,62 +56,77 @@ const nodeName = path.basename(__filename).split('.')[0];
 const nodeLogger = log4js.getLogger('NodeRed FlowManager');
 let RED;
 
-// Restoring envnode override values after deploy, so UI cannot change them.
-const originalSetFlows = PRIVATERED.runtime.flows.setFlows;
-PRIVATERED.runtime.flows.setFlows = function newSetFlows(data) {
+const originalSetFlows = PRIVATERED.runtime.storage.saveFlows;
+let lastFlows = {};
 
-    const allFlows = {"global":[]}, // global contians global config-nodes
-        mapFlowIdToNameAndType = {} // type is either "tab" or "subflow"
+PRIVATERED.runtime.storage.saveFlows = async function newSetFlows(data) {
+    if(data.flows && data.flows.length) {
 
-    const envNodePropsChangedByUser = {};
+        function getFlowFilePath(flowDetails) {
+            let folderName;
+            if(flowDetails.type === 'subflow') folderName = 'subflows';
+            else if(flowDetails.type === 'tab') folderName = 'flows';
+            else folderName = '.';
 
-    for(const node of data.flows.flows) {
-        //
-        // Enforce envnodes consistency
-        //
-        if (directories.nodesEnvConfig[node.id]) {
-            for (const key of Object.keys(directories.nodesEnvConfig[node.id])) {
-                const val = directories.nodesEnvConfig[node.id][key];
-                try {
-                    if (JSON.stringify(node[key]) !== JSON.stringify(val)) {
-                        if (!envNodePropsChangedByUser[node.id]) envNodePropsChangedByUser[node.id] = {};
-                        envNodePropsChangedByUser[node.id][key] = val;
-                        node[key] = val;
-                    }
-                } catch (e) {}
+            const flowsDir = path.resolve(directories.basePath, folderName);
+            const flowName = flowDetails.type === 'global' ? 'config-nodes' : flowDetails.name; // if it's a subflow, then the correct property is 'name'
+            const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
+            return flowFilePath;
+        }
+
+        const allFlows = {};
+
+        const envNodePropsChangedByUser = {};
+
+        for(const node of data.flows) {
+            //
+            // Enforce envnodes consistency
+            //
+            if (directories.nodesEnvConfig[node.id]) {
+                for (const key of Object.keys(directories.nodesEnvConfig[node.id])) {
+                    const val = directories.nodesEnvConfig[node.id][key];
+                    try {
+                        if (JSON.stringify(node[key]) !== JSON.stringify(val)) {
+                            if (!envNodePropsChangedByUser[node.id]) envNodePropsChangedByUser[node.id] = {};
+                            envNodePropsChangedByUser[node.id][key] = val;
+                            node[key] = val;
+                        }
+                    } catch (e) {}
+                }
+            }
+            //
+            // Fill flows, subflows, config-nodes
+            //
+            if (node.type === 'tab' || node.type === 'subflow') {
+                if (!allFlows[node.id]) allFlows[node.id] = {nodes: []};
+                if (!allFlows[node.id].name) allFlows[node.id].name = node.label || node.name;
+                if (!allFlows[node.id].type) allFlows[node.id].type = node.type;
+
+                allFlows[node.id].nodes.push(node);
+            } else if (!node.z) {
+                // global (config-node)
+                if(!allFlows.global) allFlows.global = {name:"config-nodes", type:"global", nodes: []};
+                allFlows.global.nodes.push(node);
+            } else {
+                // simple node
+                if(!allFlows[node.z]) allFlows[node.z] = {nodes: []};
+                allFlows[node.z].nodes.push(node);
             }
         }
-        //
-        // Fill flows, subflows, config-nodes
-        //
-        if (node.type === 'tab' || node.type === 'subflow') {
-            if (!allFlows[node.id]) allFlows[node.id] = [];
-            allFlows[node.id].push(node);
-            mapFlowIdToNameAndType[node.id] = {type:node.type, name: node.label || node.name};
-        } else if (!node.z) {
-            // global (config-node)
-            allFlows.global.push(node);
-        } else {
-            // simple node
-            if(!allFlows[node.z]) allFlows[node.z] = [];
-            allFlows[node.z].push(node);
+
+        // If envnode property changed, send back original values to revert on Node-RED UI as well.
+        if(Object.keys(envNodePropsChangedByUser).length>0) {
+            RED.comms.publish('flow-manager/flow-manager-envnodes-override-attempt', envNodePropsChangedByUser);
         }
-    }
-
-    // If envnode property changed, send back original values to revert on Node-RED UI as well.
-    if(Object.keys(envNodePropsChangedByUser).length>0) {
-        RED.comms.publish('flow-manager/flow-manager-envnodes-override-attempt', envNodePropsChangedByUser);
-    }
-
-    setTimeout(async function saveFlowFiles() {
 
         for(const flowId of Object.keys(allFlows)) {
 
             // Cloning flow, we potentially save a different flow file than the one we deploy.
             // this is because for every property overriden by envnode, we store an empty string "" in the actual file
             // we do that because we don't want the flow files to change every the envnode properties change.
-            const flowNodes = JSON.parse(JSON.stringify(allFlows[flowId]));
-            const flowDetails = mapFlowIdToNameAndType[flowId];
+
+            const flowDetails = JSON.parse(JSON.stringify(allFlows[flowId]));
+            const flowNodes = flowDetails.nodes;
 
             for(const node of flowNodes) {
                 // Set properties used by envnodes to = "" empty string
@@ -110,28 +137,45 @@ PRIVATERED.runtime.flows.setFlows = function newSetFlows(data) {
                 delete node.credentials;
             }
 
-            let folderName;
-            if(flowDetails) {
-                if(flowDetails.type === 'subflow') folderName = 'subflows';
-                // flow - tab
-                else folderName = 'flows';
-            } else {
-                // global (config-nodes)
-                folderName = '.';
-            }
-
-            const flowsDir = path.resolve(directories.basePath, folderName);
-            const flowName = flowId === 'global' ? 'config-nodes' : flowDetails.name; // if it's a subflow, then the correct property is 'name'
-            const flowFilePath = path.join(flowsDir, encodeFileName(flowName) + '.' + flowManagerSettings.fileFormat);
+            const flowFilePath = getFlowFilePath(flowDetails);
 
             try {
+                if(lastFlows[flowId] && allFlows[flowId] && lastFlows[flowId].name != allFlows[flowId].name) {
+                    const flowsDir = path.dirname(flowFilePath);
+                    const from = path.resolve(flowsDir, `${encodeFileName(lastFlows[flowId].name)}.${flowManagerSettings.fileFormat}`);
+                    const to = path.resolve(flowFilePath);
+                    try {
+                        // First, try rename with git
+                        await execShellCommand(`git mv -f "${from}" "${to}"`);
+                    } catch (e) {
+                        // if not working with git, do a normal "mv" command
+                        try {
+                            await fs.move(from, to, {overwrite: true});
+                        } catch (e) {}
+                    }
+                }
+
                 // save flow file
                 await writeFlowFile(flowFilePath, flowNodes);
             } catch(err) {}
         }
-    },0);
 
-    return originalSetFlows.apply(PRIVATERED.runtime.flows, arguments);
+        // Check which flows were removed, if any
+        for(const flowId of Object.keys(lastFlows)) {
+            const flowName = lastFlows[flowId];
+            if(!allFlows[flowId] && (
+                (flowManagerSettings.filter.indexOf(flowName) !== -1 || flowManagerSettings.filter.length===0) ||
+                lastFlows[flowId].type === 'subflow'
+            )) {
+                const flowFilePath = getFlowFilePath(lastFlows[flowId]);
+                await fs.remove(flowFilePath);
+            }
+        }
+
+        lastFlows = allFlows;
+    }
+
+    return originalSetFlows.apply(PRIVATERED.runtime.storage, arguments);
 }
 
 const flowManagerSettings = {};
@@ -354,7 +398,8 @@ async function main() {
         try {
             // Check if we need to migrate from "fat" flow json file to managed mode.
             if( (await fs.readdir(directories.flowsDir)).length===0 &&
-                (await fs.readdir(directories.subflowsDir)).length===0
+                (await fs.readdir(directories.subflowsDir)).length===0 &&
+                await fs.exists(directories.flowFile)
             ) {
                 nodeLogger.info('First boot with flow-manager detected, starting migration process...');
                 return true;
