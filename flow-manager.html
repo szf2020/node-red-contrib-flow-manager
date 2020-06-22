@@ -198,7 +198,7 @@
     <div>
         <dialog id="flow-manager-flows-dialog">
           <form method="dialog">
-            <p><label>Show Flows:
+            <p><label>Load Flows:
               <div id="flow-manager-flows-dialog-options"></div>
             </label></p>
             <menu>
@@ -210,14 +210,14 @@
     </div>`);
 
     function flowManagerDialogConfirmed(target) {
-        const selectAllIsChecked = $('#flow-manager-show-flow-select-all').prop('checked');
+        const selectAllIsChecked = $('#flow-manager-load-flow-select-all').prop('checked');
 
-        let flowsToShow = []; // Empty array means "all"
+        let flowsToLoad = []; // Empty array means "all"
         if(!selectAllIsChecked) {
-            $('.flow-manager-show-flow-select-item').each((index,checkboxElement)=>{
+            $('.flow-manager-load-flow-select-item').each((index,checkboxElement)=>{
                 const flowName = checkboxElement.name;
                 const flowEnabled = checkboxElement.checked;
-                if(flowEnabled) flowsToShow.push(flowName);
+                if(flowEnabled) flowsToLoad.push(flowName);
             });
         }
 
@@ -225,7 +225,7 @@
             url: 'flow-manager/flow_visibility.json',
             contentType: "application/json",
             dataType:'json',
-            data: JSON.stringify({filter:flowsToShow}),
+            data: JSON.stringify({filter:flowsToLoad}),
             type: 'PATCH',
             error: function(error) {
                 alert(`Failed to filter algos ${error}`);
@@ -238,7 +238,7 @@
 
     function flowManagerOnSelectAllChanged(target) {
         const allChecked = target.checked;
-        $('.flow-manager-show-flow-select-item').prop('disabled', allChecked?'disabled':null);
+        $('.flow-manager-load-flow-select-item').prop('disabled', allChecked?'disabled':null);
     }
 
     $(()=>{
@@ -256,7 +256,7 @@
                 getJsonPromise('flow-manager/flows.json'),
                 getJsonPromise('flow-manager/flow_visibility.json').catch(e=>Promise.resolve([]))
             ]).then(([flowsArray, flowVisibility])=>{
-                const flowsToShow = flowVisibility.filter;
+                const flowsToLoad = flowVisibility.filter;
 
                 const $selectEl = $('#flow-manager-flows-dialog-options');
                 $selectEl.empty();
@@ -264,24 +264,24 @@
                 const space = '5pt';
                 flowsArray = flowsArray.map(flowName=>flowName.substring(0, flowName.lastIndexOf('.')))
                 flowsArray.forEach(flowName=>{
-                    const thisFlowIsSelected = flowsToShow.indexOf(flowName) !== -1;
-                    const optionId = `flow-manager-show-flow-${flowName}`;
+                    const thisFlowIsSelected = flowsToLoad.indexOf(flowName) !== -1;
+                    const optionId = `flow-manager-load-flow-${flowName}`;
                     $selectEl.append(`
                         <div style="display: flex; flex-direction: row">
-                            <input class="flow-manager-show-flow-select-item" type="checkbox" id="${optionId}" name="${flowName}" value="${flowName}" ${thisFlowIsSelected?'checked="true"':''} />
+                            <input class="flow-manager-load-flow-select-item" type="checkbox" id="${optionId}" name="${flowName}" value="${flowName}" ${thisFlowIsSelected?'checked="true"':''} />
                             <label for="${optionId}" style="margin-left: ${space}">${flowName}</label>
                         </div>
                     `);
                 });
 
                 $selectEl.prepend(`<div style="display: flex; flex-direction: row">
-                        <input onchange="flowManagerOnSelectAllChanged(this)" type="checkbox" id="flow-manager-show-flow-select-all" name="all" value="all" />
-                        <label for="flow-manager-show-flow-select-all" style="margin-left: ${space}">Show All</label>
+                        <input onchange="flowManagerOnSelectAllChanged(this)" type="checkbox" id="flow-manager-load-flow-select-all" name="all" value="all" />
+                        <label for="flow-manager-load-flow-select-all" style="margin-left: ${space}">Load All</label>
                     </div>
                     <hr style="margin: 2pt 0;"/>`);
 
-                const allAreSelected = flowsToShow.length === 0;
-                const $selectAllElement = $('#flow-manager-show-flow-select-all');
+                const allAreSelected = flowsToLoad.length === 0;
+                const $selectAllElement = $('#flow-manager-load-flow-select-all');
                 $selectAllElement.prop('checked', allAreSelected);
                 $selectAllElement.trigger('change');
 

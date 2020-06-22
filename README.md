@@ -26,7 +26,7 @@ $ npm install node-red-contrib-flow-manager
 After installation of this module, during first boot only, A migration process will initiate.
 
 During migration, your main flow json file will be split to multiple files which will store your node information.<br/>
-Once that happens, it deletes your main flow json, so please **back up yout main flow json**, before running this module.
+Once that happens, it deletes your main flow json, so please **back up your main flow json**, before running this module.
 
 Node-RED startup process after migration:<br/>
 All of your flow files are combined into a single JSON object, which is then loaded and served as your main flow object.
@@ -39,12 +39,12 @@ The nodes will be stored in the following subdirectories of your Node-RED path a
 * `/config-nodes.json` (global config nodes will be stored here)
 It's a good idea to add these paths to your version control system. 
 
-#### ![Filter Flows](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows.png)
+#### ![Filter Flows](filter_flows.png) (Filter Flows Button)
 * Allows selecting which flows Node-RED will load, and which will be ignored and not loaded, **not only in Node-RED's UI, also in it's NodeJS process.** <br/>
 * Unselected flows are NOT deleted, only "ignored" until you select them again using `Filter Flows`.
 * Filtering configuration is stored in `flow_visibility.json` file under your Node-RED path.
 * if `flow_visibility.json` file does not exist, or exists but malformed, or contains an empty JSON array, then all flows will be loaded and no filtering is done.
-* ![Filter Flows Popup](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/master/filter_flows_popup.png)
+* ![Filter Flows Popup](filter_flows_popup.png)
     
 ### envnodes
 envnodes allows configuration of nodes using an external source.<br/>
@@ -115,6 +115,3 @@ See comparison below
         ]
     }
     ```
-    
-### Known Issues
-1. If you wish to delete/rename a flow or subflow, you have to delete/rename the actual file and then restart Node-RED.
