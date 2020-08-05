@@ -8,6 +8,8 @@ const path = require('path')
     , eol = require('eol')
     , YAML = require('js-yaml')
     , child_process = require('child_process')
+    , crypto = require('crypto')
+    , debounce = require('./debounce')
 ;
 
 function execShellCommand(cmd) {
@@ -223,14 +225,39 @@ async function readActiveProject() {
 const directories = {};
 async function main() {
 
+    let initialLoadPromise = (()=>{
+        let res;
+        const p = new Promise((resolve, reject)=>{
+            res = resolve;
+        });
+        p.resolve = res;
+        return p
+    })()
+
+    const originalGetFlows = PRIVATERED.runtime.storage.getFlows;
+    PRIVATERED.runtime.storage.getFlows = async function () {
+        if(initialLoadPromise) await initialLoadPromise;
+        const retVal = await originalGetFlows.apply(PRIVATERED.runtime.storage, arguments);
+
+        const flows = await loadFlows(null, true);
+
+        retVal.flows = flows
+        retVal.rev = crypto.createHash('md5').update(JSON.stringify(flows)).digest("hex");
+        return retVal;
+    }
+
     async function refreshDirectories() {
         let basePath, project = null;
         if(RED.settings.editorTheme.projects.enabled) {
             project = await readActiveProject();
 
-            const activeProjectPath = path.join(RED.settings.userDir, 'projects', project);
+            if(project) {
+                const activeProjectPath = path.join(RED.settings.userDir, 'projects', project);
+                basePath = activeProjectPath;
+            } else {
+                basePath = RED.settings.userDir;
+            }
 
-            basePath = activeProjectPath;
         } else {
             basePath = RED.settings.userDir;
         }
@@ -308,7 +335,7 @@ async function main() {
         await fs.ensureDir(directories.subflowsDir);
     }
 
-    async function loadFlows(flowsToShow = null) {
+    async function loadFlows(flowsToShow = null, getMode = false) {
 
         const flowsDir = directories.flowsDir;
 
@@ -386,11 +413,15 @@ async function main() {
         nodeLogger.info('Loading flows:', items);
         nodeLogger.info('Loading subflows:', subflowItems);
 
-        try {
-            await PRIVATERED.nodes.setFlows(flowJsonSum, 'full');
-            nodeLogger.info('Finished setting node-red nodes successfully.');
-        } catch (e) {
-            nodeLogger.error('Failed setting node-red nodes\r\n' + e.stack||e);
+        if(!getMode) {
+            try {
+                await PRIVATERED.nodes.setFlows(flowJsonSum, 'full');
+                nodeLogger.info('Finished setting node-red nodes successfully.');
+            } catch (e) {
+                nodeLogger.error('Failed setting node-red nodes\r\n' + e.stack||e);
+            }
+        } else {
+            return flowJsonSum;
         }
     }
 
@@ -445,35 +476,22 @@ async function main() {
         }
 
         // Delete flows json file (will be replaced with our flow manager logic (filters & combined separate flow json files)
-        fs.remove(directories.flowFile).then(function () {
-            nodeLogger.info('Deleted previous flows json file.');
-            return Promise.resolve();
-        }).catch(function () {return Promise.resolve();})
-
-        const eraseMainFlowsAndLoadActualFlows = async function eraseMainFlowsAndLoadActualFlows() {
-            await PRIVATERED.nodes.setFlows([], 'full');
-            await loadFlows();
-        }
-
-        if(directories.project) {
-            RED.events.once('runtime-event', async function () {
-                await eraseMainFlowsAndLoadActualFlows();
-            });
-        } else {
-            await eraseMainFlowsAndLoadActualFlows();
-        }
+        // fs.remove(directories.flowFile).then(function () {
+        //     nodeLogger.info('Deleted previous flows json file.');
+        //     return Promise.resolve();
+        // }).catch(function () {return Promise.resolve();})
     }
 
     await startFlowManager();
-    if(directories.project) {
+    if(RED.settings.editorTheme.projects.enabled) {
         let lastProject = await readActiveProject();
-        fs.watch(path.join(RED.settings.userDir, '.config.json'), async () => {
+        fs.watch(path.join(RED.settings.userDir, '.config.json'), debounce(async () => {
             const newProject = await readActiveProject();
             if(lastProject != newProject) {
                 lastProject = newProject;
                 await startFlowManager();
             }
-        });
+        }, 500));
     }
 
     RED.httpAdmin.get( '/'+nodeName+'/flows.json', async function (req, res) {
@@ -500,6 +518,9 @@ async function main() {
 
     // serve libs
     RED.httpAdmin.use( '/'+nodeName+'/flow_visibility.json', serveStatic(path.join(directories.basePath, "flow_visibility.json")) );
+
+    initialLoadPromise.resolve();
+    initialLoadPromise = null;
 }
 
 module.exports = function(_RED) {

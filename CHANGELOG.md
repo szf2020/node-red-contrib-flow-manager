@@ -1,3 +1,8 @@
+#### 0.5.2 Flow handling enhancements
+
+- Performance improvement during initial boot.
+- Fix for project mode when creating first project.
+
 #### 0.5.1 Flow handling enhancements
 
 - Flow renaming/removal triggered automatically by deploy.<br/>No need to delete/rename the flow in the file-system manually.

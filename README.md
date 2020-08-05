@@ -26,12 +26,12 @@ $ npm install node-red-contrib-flow-manager
 After installation of this module, during first boot only, A migration process will initiate.
 
 During migration, your main flow json file will be split to multiple files which will store your node information.<br/>
-Once that happens, it deletes your main flow json, so please **back up your main flow json**, before running this module.
+It is advised to **back up your main flow json**, before running this module for the first time.
 
 Node-RED startup process after migration:<br/>
 All of your flow files are combined into a single JSON object, which is then loaded and served as your main flow object.
 
-For that reason, it is advised to add your "fat" flow json file to .gitignore because from that moment, the flows are saved separately, and the main file becomes temporary since it is always deleted upon startup.
+For that reason, it is advised to add your "fat" flow json file to .gitignore because from that moment, the flows are saved separately.
 
 The nodes will be stored in the following subdirectories of your Node-RED path as such:
 * `/flows/`**`flow name`**
