@@ -1,12 +1,13 @@
 ## _Flow Manager_ module for node-red
 
-Flow Manager separates your flow json to multiple files.
+Flow Manager separates your flow json to multiple files.<br/>
+***Compatible only with Node-RED 0.20 and above***
 
 ### Installation
 
 This assumes you have [Node-RED](https://nodered.org) already installed and working, if you need to install Node-RED see [here](https://nodered.org/docs/getting-started/installation)
 
-**NOTE:** This requires [Node.js](https://nodejs.org) v8.11.1+ and [Node-RED](https://nodered.org/) v0.19+.
+**NOTE:** This requires [Node.js](https://nodejs.org) v8.11.1+
 
 Install via Node-RED Manage Palette
 
@@ -58,11 +59,15 @@ create "envnodes/default.jsonata" in your Node-RED project directory and put the
        "21bcf36a.891e4d": {
           "broker": $config.mqtt.broker,
           "port": $config.mqtt.port
+       },
+       "name:SomeInjectNodeName": {
+          "topic": "niceTopic"
        }
      };
   )
 ```
-The result would be that your mqtt config node will use values from an external configuration file, which is useful in some cases.
+The result would be that your mqtt config node will use values from an external configuration file (which is useful in some cases),
+And a topic value will be inserted to an inject node matched with the given name.
 
 Note `basePath` is the path to your Node-RED directory.<br/>
 When using Node-RED's "project mode", the value is the project folder path. 
@@ -115,3 +120,44 @@ See comparison below
         ]
     }
     ```
+  
+### On Demand flow loading using external RESTful requests
+During runtime, you can request flow-manager to load any flow file placed in the flows directory,<br/>
+by sending a POST request with the flows you wish to load (regardless of whether you configured any filter-flows or not)
+
+Example request:<br/>
+```
+curl --header "Content-Type: application/json" \
+  --request POST \
+  --data '["Flow1", "Flow2"]' \
+  http://localhost:1880/flow-manager/flows
+```
+Pass an empty json array to load all flows. 
+
+### Retrieve flow states for all flows, subflows, and global nodes (config nodes)
+
+Retrieve state for specific type and flow.<br/>
+`http://localhost:1880/flow-manager/flows/:type/:flowName`
+
+
+Retrieve state for all flows of a given type.<br/>
+`http://localhost:1880/flow-manager/flows/:type`
+
+Retrieve state for all flows/subflows/global.<br/>
+`http://localhost:1880/flow-manager/flows/`
+
+`:type` can be subflow/flow/global (if `global`, there's no need for `:flowName`).
+
+Example response for specific flow (`http://localhost:1880/flow-manager/flows/flow/Flow1`)
+```
+{
+    "deployed": true,
+    "hasUpdate": false,
+    "onDemand": false
+}
+```
+* `deployed` whether that flow file is deployed. 
+* `hasUpdate` whether that flow file was changed externally, and can be deployed again to update.
+* `onDemand` whether that flow was deployed by an OnDemand request, and is not part of filtered flows selection. 
+
+

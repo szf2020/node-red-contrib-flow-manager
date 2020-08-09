@@ -1,3 +1,10 @@
+#### 0.6.0 Flow handling enhancements
+
+- Performance improvements during deploys. 
+- Support for envnode overriding using node name (not only by node id). 
+- On Demand flow loading using RESTful requests (apart from filter-flows).
+- Retrieving state of flows using RESTful requests (isDeployed/hasUpdate/onDemand).  
+
 #### 0.5.2 Flow handling enhancements
 
 - Performance improvement during initial boot.

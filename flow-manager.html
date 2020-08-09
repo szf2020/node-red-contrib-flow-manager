@@ -192,8 +192,6 @@
         `);
     }
 
-
-
     $('body').prepend(`
     <div>
         <dialog id="flow-manager-flows-dialog">
@@ -222,7 +220,7 @@
         }
 
         $.ajax({
-            url: 'flow-manager/flow_visibility.json',
+            url: 'flow-manager/flow_visibility',
             contentType: "application/json",
             dataType:'json',
             data: JSON.stringify({filter:flowsToLoad}),
@@ -253,8 +251,8 @@
 
         filterFlowsButton.addEventListener('click', function() {
             Promise.all([
-                getJsonPromise('flow-manager/flows.json'),
-                getJsonPromise('flow-manager/flow_visibility.json').catch(e=>Promise.resolve([]))
+                getJsonPromise('flow-manager/flow-names'),
+                getJsonPromise('flow-manager/flow_visibility').catch(e=>Promise.resolve([]))
             ]).then(([flowsArray, flowVisibility])=>{
                 const flowsToLoad = flowVisibility.filter;
 
