@@ -16,37 +16,91 @@
         cursor: default !important;
     }
 
-    .flow-manager-save-button {
-        background-color: #00701b !important;
-    }
-
     .flow-manager-filter-flows-button {
         background-color: #176670 !important;;
     }
+
+    #flow-manager-flows-dialog-options .ui-selecting {
+        background: #feca40;
+    }
+    #flow-manager-flows-dialog-options .ui-selected {
+        background: #7c9cec;
+    }
+
+    #flow-manager-flows-dialog-options { list-style-type: none; margin: 0; padding: 0; width: 60%; }
+    #flow-manager-flows-dialog-options li { margin: 1px; padding: 0.2em; font-size: 1.0em;}
+
 </style>
 
 <script type="text/javascript">
+    $(()=>{
+        const _nr1Header = $('ul.red-ui-header-toolbar');
+        if(_nr1Header.length) {
+            _nr1Header.prepend(`
+            <li>
+                <button class="button-group red-ui-deploy-button toolbar-button flow-manager-filter-flows-button" href="#">
+                    <i class="fa fa-filter"></i> Filter Flows</button>
+                </button>
+            </li>
+        `);
+        } else {
+            // Add "filter flows" button
+            $('.header-toolbar').prepend(`
+            <span>
+                <span>
+                    <button class="toolbar-button flow-manager-filter-flows-button"><i class="fa fa-filter"></i> Filter Flows</button>
+                </span>
+            </span>
+        `);
+        }
 
-    (function() {
+        $('body').prepend(`
+        <div>
+            <dialog id="flow-manager-flows-dialog">
+              <form method="dialog" style="text-align: center">
+                <p><label>Load Flows:
+                    <div>
+                        <input id="filter-flows-all-flows-input" type="checkbox" name="all" value="all" />
+                        <label for="filter-flows-all-flows-input">Load All</label>
+                    </div>
+                    <hr style="margin: 2pt 0;"/>
+                    <ol id="flow-manager-flows-dialog-options" style="width: 100%;"></ol>
+                </label></p>
+                <menu>
+                  <button id="filter-flows-confirm">Confirm</button>
+                </menu>
+              </form>
+            </dialog>
+        </div>`);
+
 
         RED.comms.subscribe('flow-manager/flow-manager-envnodes-override-attempt', function (topic, envNodePropsChangedByUser) {
 
+            let text = '<br/><br/><p>'
             // Revert properties on view (those defined by envnodes)
             for(const nodeId of Object.keys(envNodePropsChangedByUser)) {
                 const node = RED.nodes.node(nodeId);
                 const envNodeCfg = envNodePropsChangedByUser[nodeId];
 
+                text += '<hr/>';
+                text += `<div><span style="color:#7e7d2c">${node.name || node.label || 'Unnamed'} (${nodeId})</span></div>`;
+                text += `<ul>`;
                 for(const envNodeCfgKey of Object.keys(envNodeCfg)) {
+                    text += `<li><strong>${envNodeCfgKey}</strong>: attempt=<span style="color: #962d2d">${node[envNodeCfgKey]}</span> original=<span style="color: #55a23a">${envNodeCfg[envNodeCfgKey]}</span></li>`
                     node[envNodeCfgKey] = envNodeCfg[envNodeCfgKey];
                 }
+                text += `</ul>`;
                 RED.editor.updateNodeProperties(node);
                 RED.view.redraw();
             }
 
+            text += '<hr/>';
+            text += `</p>`;
+
             const myNotification = RED.notify(
-                `Warning!<br/>Detected user attempt to change envnodes controlled properties.<br/>Don't worry, these changes were not applied.`, {
-                    type: "error",
-                    timeout: 12000,
+                `Warning!<br/>Detected user attempt to change envnodes controlled properties.<br/>Don't worry, these properties were restored to envnodes values.${text}`, {
+                    type: "warn",
+                    timeout: 30000,
                     buttons: [
                         {
                             text: "Thanks",
@@ -57,189 +111,32 @@
                     ]
                 });
         });
-    })();
 
-    function manageFlow(op, nodesArray) {
-        let url = `flow-manager/${op}`;
-        url += `/${RED.workspaces.active()}`;
-
-        return fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json; charset=utf-8",
-            },
-            body: JSON.stringify(nodesArray)
-        })
-            .then(function(response) {
-                return response.json();
-            })
-            .then(function (theJson) {
-                if(theJson.error) throw theJson.error;
-                const myNotification = RED.notify("Saved successfully.", {
-                    timeout: 1500,
-                    buttons: [
-                        {
-                            text: "cool, dismiss.",
-                            click: function(e) {
-                                myNotification.close();
-                            }
-                        }
-                    ]
-                });
-            })
-            .catch(function(error) {
-                const myNotification = RED.notify("Failed: " + error, {
-                    type: 'warning',
-                    buttons: [
-                        {
-                            text: "damn, dismiss.",
-                            click: function(e) {
-                                myNotification.close();
-                            }
-                        }
-                    ]
-                });
-            });
-    }
-
-    function exportConfigNodes() {
-        const configNodes = [];
-        const duplicatesToDelete = [];
-        RED.nodes.eachConfig(e=>{configNodes.push(e)});
-        const exportableConfigNodes = RED.nodes.createExportableNodeSet(configNodes, [], duplicatesToDelete);
-
-        // Delete flow config nodes, they are saved in their flow file.
-        for(let i = exportableConfigNodes.length-1; i>=0; i--) {
-            const node = exportableConfigNodes[i];
-            if(node.z && node.z.length) {
-                exportableConfigNodes.splice(i,1);
-            }
-        }
-
-        // DeDuplicate (Might have to do it better, for now it seems to work)
-        for(const idToDelete of Object.keys(duplicatesToDelete)) {
-            for(let i=Object.keys(exportableConfigNodes).length-1;i>=0;i--) {
-                if(exportableConfigNodes[i].id === idToDelete) {
-                    exportableConfigNodes.splice(i,1);
-                    break;
-                }
-            }
-        }
-
-        return exportableConfigNodes;
-    }
-
-    function saveCurrentFlow() {
-        try {
-            const activeWorkspace = RED.workspaces.active();
-            const parentNode = RED.nodes.workspace(activeWorkspace)||RED.nodes.subflow(activeWorkspace);
-
-            let allNodesInFlow = RED.nodes.filterNodes({z:activeWorkspace});
-            allNodesInFlow.unshift(parentNode);
-            allNodesInFlow = RED.nodes.createExportableNodeSet(allNodesInFlow);
-
-            // Remove unrelated nodes
-            const idxsToRemove = [];
-            allNodesInFlow.forEach((nodeJson, index)=>{
-                if(nodeJson.type !== parentNode.type) {
-                    if(nodeJson.z !== activeWorkspace) {
-                        idxsToRemove.unshift(index);
-                    }
-                } else if(nodeJson.type === 'subflow' && nodeJson.id !== parentNode.id) { // they are both equal to subflow
-                    idxsToRemove.unshift(index);
-                }
-            });
-            idxsToRemove.forEach(i=>allNodesInFlow.splice(i,1));
-
-            const allConfigNodeIds = [];
-            RED.nodes.eachConfig(c=>allConfigNodeIds.push(c.id));
-
-            manageFlow('save', {
-                flow: allNodesInFlow,
-                configNodes: exportConfigNodes(),
-                allConfigNodeIds: allConfigNodeIds
-            }).then(e=>{
-                const oldNodeRedButton = $('#btn-deploy'); // 0.20 or less
-                if(oldNodeRedButton.length) {
-                    oldNodeRedButton.click();
-                } else {
-                    // node-red 1
-                    $('.red-ui-deploy-button-content').click()
-                }
-            });
-        } catch(e) {
-            alert('No active workspace (flow/subflow)');
-        }
-    }
-
-    const _nr1Header = $('ul.red-ui-header-toolbar');
-    if(_nr1Header.length) {
-        _nr1Header.prepend(`
-        <li>
-            <button class="button-group red-ui-deploy-button toolbar-button flow-manager-filter-flows-button" href="#">
-                <i class="fa fa-filter"></i> Filter Flows</button>
-            </button>
-        </li>
-        `);
-    } else {
-        // Add "filter flows" button
-        $('.header-toolbar').prepend(`
-        <span>
-            <span>
-                <button class="toolbar-button flow-manager-filter-flows-button"><i class="fa fa-filter"></i> Filter Flows</button>
-            </span>
-        </span>
-        `);
-    }
-
-    $('body').prepend(`
-    <div>
-        <dialog id="flow-manager-flows-dialog">
-          <form method="dialog">
-            <p><label>Load Flows:
-              <div id="flow-manager-flows-dialog-options"></div>
-            </label></p>
-            <menu>
-              <button>Cancel</button>
-              <button onclick="flowManagerDialogConfirmed(this)">Confirm</button>
-            </menu>
-          </form>
-        </dialog>
-    </div>`);
-
-    function flowManagerDialogConfirmed(target) {
-        const selectAllIsChecked = $('#flow-manager-load-flow-select-all').prop('checked');
 
         let flowsToLoad = []; // Empty array means "all"
-        if(!selectAllIsChecked) {
-            $('.flow-manager-load-flow-select-item').each((index,checkboxElement)=>{
-                const flowName = checkboxElement.name;
-                const flowEnabled = checkboxElement.checked;
-                if(flowEnabled) flowsToLoad.push(flowName);
+        $('#filter-flows-confirm').click(function flowManagerDialogConfirmed() {
+            const selectAllIsChecked = $('#filter-flows-all-flows-input').prop('checked');
+
+            $.ajax({
+                url: 'flow-manager/filter-flows',
+                contentType: "application/json",
+                dataType:'json',
+                data: JSON.stringify(selectAllIsChecked? [] : flowsToLoad),
+                type: 'PUT',
+                error: function(error) {
+                    alert(`Failed to filter algos ${error}`);
+                },
+                success: function () {
+                    location.reload();
+                }
             });
-        }
-
-        $.ajax({
-            url: 'flow-manager/flow_visibility',
-            contentType: "application/json",
-            dataType:'json',
-            data: JSON.stringify({filter:flowsToLoad}),
-            type: 'PATCH',
-            error: function(error) {
-                alert(`Failed to filter algos ${error}`);
-            },
-            success: function () {
-                location.reload();
-            }
         });
-    }
 
-    function flowManagerOnSelectAllChanged(target) {
-        const allChecked = target.checked;
-        $('.flow-manager-load-flow-select-item').prop('disabled', allChecked?'disabled':null);
-    }
+        $('#filter-flows-all-flows-input').change(function flowManagerOnSelectAllChanged(target) {
+            const allChecked = target.currentTarget.checked;
+            $('.flow-manager-load-flow-select-item').css('display', allChecked?'none':'');
+        });
 
-    $(()=>{
         function getJsonPromise(url) {
             return new Promise( function(resolve, reject) {
                 $.getJSON(url).done(resolve).error(reject);
@@ -252,39 +149,37 @@
         filterFlowsButton.addEventListener('click', function() {
             Promise.all([
                 getJsonPromise('flow-manager/flow-names'),
-                getJsonPromise('flow-manager/flow_visibility').catch(e=>Promise.resolve([]))
-            ]).then(([flowsArray, flowVisibility])=>{
-                const flowsToLoad = flowVisibility.filter;
+                getJsonPromise('flow-manager/filter-flows').catch(e=>Promise.resolve([]))
+            ]).then(([flowsArray, flowsFromConfig])=>{
+
+                flowsToLoad = flowsFromConfig;
 
                 const $selectEl = $('#flow-manager-flows-dialog-options');
                 $selectEl.empty();
 
-                const space = '5pt';
+                $selectEl.selectable({
+                    stop: function() {
+                        flowsToLoad = [];
+                        $( ".ui-selected", this ).each(function() {
+                            const flowName = this.innerText;
+                            flowsToLoad.push(flowName);
+                        });
+                    }
+                });
+
                 flowsArray = flowsArray.map(flowName=>flowName.substring(0, flowName.lastIndexOf('.')))
                 flowsArray.forEach(flowName=>{
-                    const thisFlowIsSelected = flowsToLoad.indexOf(flowName) !== -1;
-                    const optionId = `flow-manager-load-flow-${flowName}`;
+                    const thisFlowIsSelected = flowsFromConfig.indexOf(flowName) !== -1;
                     $selectEl.append(`
-                        <div style="display: flex; flex-direction: row">
-                            <input class="flow-manager-load-flow-select-item" type="checkbox" id="${optionId}" name="${flowName}" value="${flowName}" ${thisFlowIsSelected?'checked="true"':''} />
-                            <label for="${optionId}" style="margin-left: ${space}">${flowName}</label>
-                        </div>
+                        <li class="flow-manager-load-flow-select-item ui-widget-content ${thisFlowIsSelected?'ui-selected':''}">
+                            ${flowName}
+                        </li>
                     `);
                 });
 
-                $selectEl.prepend(`<div style="display: flex; flex-direction: row">
-                        <input onchange="flowManagerOnSelectAllChanged(this)" type="checkbox" id="flow-manager-load-flow-select-all" name="all" value="all" />
-                        <label for="flow-manager-load-flow-select-all" style="margin-left: ${space}">Load All</label>
-                    </div>
-                    <hr style="margin: 2pt 0;"/>`);
-
-                const allAreSelected = flowsToLoad.length === 0;
-                const $selectAllElement = $('#flow-manager-load-flow-select-all');
-                $selectAllElement.prop('checked', allAreSelected);
-                $selectAllElement.trigger('change');
-
-                if(selectFlowsDialog.open) return;
-                selectFlowsDialog.showModal();
+                $( selectFlowsDialog ).dialog();
+                $('#filter-flows-all-flows-input').prop('checked', !flowsFromConfig || !flowsFromConfig.length )
+                $('#filter-flows-all-flows-input').trigger('change')
             }).catch(alert);
         });
     })

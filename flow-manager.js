@@ -2,7 +2,6 @@ const path = require('path')
     , fs = require('fs-extra')
     , bodyParser = require('body-parser')
     , log4js = require('log4js')
-    , serveStatic = require('serve-static')
     , os = require("os")
     , jsonata = require('jsonata')
     , eol = require('eol')
@@ -58,9 +57,13 @@ const nodeName = path.basename(__filename).split('.')[0];
 const nodeLogger = log4js.getLogger('NodeRed FlowManager');
 let RED;
 
-const originalSaveFlows = PRIVATERED.runtime.storage.saveFlows;
-let lastFlows = {};
+function getNodesEnvConfigForNode(node) {
+    return (node.name && directories.nodesEnvConfig["name:" + node.name]) ||
+        (node.id && directories.nodesEnvConfig[node.id]);
+}
 
+let lastFlows = {};
+const originalSaveFlows = PRIVATERED.runtime.storage.saveFlows;
 PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
     if(data.flows && data.flows.length) {
 
@@ -76,18 +79,21 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
             return flowFilePath;
         }
 
-        const allFlows = {};
         const loadedFlowAndSubflowNames = {};
-
         const envNodePropsChangedByUser = {};
 
+        const allFlows = {};
+        const orderedNodeIds = [];
         for(const node of data.flows) {
+            orderedNodeIds.push(node.id);
+
             //
             // Enforce envnodes consistency
             //
-            if (directories.nodesEnvConfig[node.id]) {
-                for (const key of Object.keys(directories.nodesEnvConfig[node.id])) {
-                    const val = directories.nodesEnvConfig[node.id][key];
+            const envConfig = getNodesEnvConfigForNode(node);
+            if (envConfig) {
+                for (const key in envConfig) {
+                    const val = envConfig[key];
                     try {
                         if (JSON.stringify(node[key]) !== JSON.stringify(val)) {
                             if (!envNodePropsChangedByUser[node.id]) envNodePropsChangedByUser[node.id] = {};
@@ -97,6 +103,7 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
                     } catch (e) {}
                 }
             }
+
             //
             // Fill flows, subflows, config-nodes
             //
@@ -105,9 +112,8 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
                 if (!allFlows[node.id].name) allFlows[node.id].name = node.label || node.name;
                 if (!allFlows[node.id].type) allFlows[node.id].type = node.type;
 
-                loadedFlowAndSubflowNames[node.id] = allFlows[node.id];
-
                 allFlows[node.id].nodes.push(node);
+                loadedFlowAndSubflowNames[node.id] = allFlows[node.id];
             } else if (!node.z) {
                 // global (config-node)
                 if(!allFlows.global) allFlows.global = {name:"config-nodes", type:"global", nodes: []};
@@ -119,34 +125,49 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
             }
         }
 
+        // save node ordering file
+        await fs.writeJson(directories.nodesOrderFilePath, orderedNodeIds);
+
         // If envnode property changed, send back original values to revert on Node-RED UI as well.
         if(Object.keys(envNodePropsChangedByUser).length>0) {
             RED.comms.publish('flow-manager/flow-manager-envnodes-override-attempt', envNodePropsChangedByUser);
         }
 
+        deployedFlowNames.clear();
         for(const flowId of Object.keys(allFlows)) {
 
-            // Cloning flow, we potentially save a different flow file than the one we deploy.
-            // this is because for every property overriden by envnode, we store an empty string "" in the actual file
-            // we do that because we don't want the flow files to change every the envnode properties change.
+            const flowName = allFlows[flowId].name;
+            const flowType = allFlows[flowId].type;
 
-            const flowDetails = JSON.parse(JSON.stringify(allFlows[flowId]));
-            const flowNodes = flowDetails.nodes;
-
-            for(const node of flowNodes) {
-                // Set properties used by envnodes to = "" empty string
-                const foundNodeEnvConfig =
-                    (node.name && directories.savedEnvConfig["name:"+node.name]) ||
-                    (node.id && directories.savedEnvConfig[node.id]);
-
-                if(foundNodeEnvConfig) {
-                    Object.assign(node, foundNodeEnvConfig);
-                }
-                // delete credentials
-                delete node.credentials;
+            if(flowType === 'tab' &&
+                (
+                    flowManagerSettings.filter.indexOf(flowName) !== -1 ||
+                    flowManagerSettings.filter.length===0 ||
+                    onDemandFlowsManager.onDemandFlowsSet.has(flowName)
+                )
+            ) {
+                deployedFlowNames.add(flowName);
             }
 
-            const flowFilePath = getFlowFilePath(flowDetails);
+            // Potentially we save different flow file than the one we deploy, like "credentials" property is deleted in flow file.
+            const flowNodes = JSON.parse(JSON.stringify(allFlows[flowId].nodes));
+
+            for(const node of flowNodes) {
+                // Set properties used by envnodes to mared them as flow-manager managed.
+                const foundNodeEnvConfig = getNodesEnvConfigForNode(node);
+
+                if(foundNodeEnvConfig) {
+                    for(const prop in foundNodeEnvConfig) {
+                        node[prop] = "flow-manager-managed";
+                    }
+                }
+                // delete credentials
+                if(node.credentials != null) {
+                    delete node.credentials;
+                }
+            }
+
+            const flowFilePath = getFlowFilePath({type: flowType, name: flowName});
 
             try {
                 if(lastFlows[flowId] && allFlows[flowId] && lastFlows[flowId].name != allFlows[flowId].name) {
@@ -165,7 +186,22 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
                 }
 
                 // save flow file
-                await writeFlowFile(flowFilePath, flowNodes);
+                const fileStr = await writeFlowFile(flowFilePath, flowNodes);
+                const stat = await fs.stat(flowFilePath);
+                // update revisions
+                const flowRev = calculateRevision(fileStr)
+                switch (flowType) {
+                    case 'tab':
+                        revisions.byFlowName[flowName] = {rev:flowRev, mtime:stat.mtime};
+                        break
+                    case 'subflow':
+                        revisions.bySubflowName[flowName] = {rev:flowRev, mtime:stat.mtime};
+                        break
+                    case 'global':
+                        revisions.global = {rev:flowRev, mtime:stat.mtime};
+                        break
+                }
+
             } catch(err) {}
         }
 
@@ -189,14 +225,15 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
 
 const flowManagerSettings = {};
 
-function writeFlowFile(filePath, flowObject) {
+async function writeFlowFile(filePath, flowObject) {
     let str;
     if(flowManagerSettings.fileFormat === 'yaml') {
         str = YAML.safeDump(flowObject);
     } else {
         str = stringifyFormattedFileJson(flowObject);
     }
-    return fs.outputFile(filePath, str);
+    await fs.outputFile(filePath, str);
+    return str;
 }
 
 async function readFlowFile(filePath, ignoreObj) {
@@ -206,7 +243,10 @@ async function readFlowFile(filePath, ignoreObj) {
     const fileContentsStr = await fs.readFile(filePath, 'utf-8');
     retVal.str = fileContentsStr;
 
-    if(ignoreObj) return retVal;
+    if(ignoreObj) {
+        retVal.mtime = (await fs.stat(filePath)).mtime
+        return retVal;
+    }
 
     const indexOfExtension = filePath.lastIndexOf('.');
     const fileExt = filePath.substring(indexOfExtension+1).toLowerCase();
@@ -220,7 +260,10 @@ async function readFlowFile(filePath, ignoreObj) {
 
         // Delete old file
         await fs.remove(filePath);
+        filePath = newFilePathWithNewExt;
     }
+
+    retVal.mtime = (await fs.stat(filePath)).mtime
     retVal.obj = finalObject;
 
     return retVal;
@@ -249,6 +292,29 @@ async function flowFileExists(flowName) {
     return fs.exists(path.resolve(directories.flowsDir, `${flowName}.${flowManagerSettings.fileFormat}`));
 }
 
+const onDemandFlowsManager = {
+    onDemandFlowsSet: new Set(),
+    updateOnDemandFlowsSet: async function (newSet) {
+        let totalSet;
+        //
+        // If flow file does not exist, or is already passed filtering settings, we don't consider it an on-demand flow
+        //
+        if(flowManagerSettings.filter.length === 0) {
+            totalSet = new Set();
+        } else {
+            totalSet = newSet;
+            for(const flowName of Array.from(totalSet)) {
+                if(!await flowFileExists(flowName) || flowManagerSettings.filter.indexOf(flowName) !== -1) {
+                    totalSet.delete(flowName);
+                }
+            }
+        }
+
+        onDemandFlowsManager.onDemandFlowsSet = totalSet;
+        return onDemandFlowsManager.onDemandFlowsSet;
+    }
+}
+
 async function readActiveProject() {
     try {
         const redConfig = await fs.readJson(path.join(RED.settings.userDir, '.config.json'));
@@ -264,6 +330,12 @@ const revisions = {
     global: null // config nodes, etc..
 }
 
+let deployedFlowNames = new Set();
+
+function calculateRevision(str) {
+    return crypto.createHash('md5').update(str).digest("hex");
+}
+
 const directories = {};
 async function main() {
 
@@ -276,33 +348,6 @@ async function main() {
         return p
     })()
 
-    const onDemandFlowsManager = {
-        onDemandFlowsSet: new Set(),
-        updateOnDemandFlowsSet: async function (newSet) {
-            let totalSet;
-            //
-            // If flow file does not exist, or is already passed filtering settings, we don't consider it an on-demand flow
-            //
-            if(flowManagerSettings.filter.length === 0) {
-                totalSet = new Set();
-            } else {
-                totalSet = new Set(Array.from(onDemandFlowsManager.onDemandFlowsSet).concat(Array.from(newSet)));
-                for(const flowName of Array.from(totalSet)) {
-                    if(!await flowFileExists(flowName) || flowManagerSettings.filter.indexOf(flowName) !== -1) {
-                        totalSet.delete(flowName);
-                    }
-                }
-            }
-
-            onDemandFlowsManager.onDemandFlowsSet = totalSet;
-            return onDemandFlowsManager.onDemandFlowsSet;
-        }
-    }
-
-    function calculateRevision(str) {
-        return crypto.createHash('md5').update(str).digest("hex");
-    }
-
     const originalGetFlows = PRIVATERED.runtime.storage.getFlows;
     PRIVATERED.runtime.storage.getFlows = async function () {
         if(initialLoadPromise) await initialLoadPromise;
@@ -312,8 +357,16 @@ async function main() {
 
         retVal.flows = flowsInfo.flows;
         retVal.rev = calculateRevision(JSON.stringify(flowsInfo.flows));
-        revisions.byFlowName = flowsInfo.flowHashes;
-        revisions.bySubflowName = flowsInfo.subflowHashes;
+
+        revisions.byFlowName = flowsInfo.flowVersions;
+        revisions.bySubflowName = flowsInfo.subflowVersions;
+        revisions.global = flowsInfo.globalVersion;
+
+        deployedFlowNames = new Set(
+            Object.values(flowsInfo.loadedFlowAndSubflowNames)
+                .filter(flow=>flow.type==='tab')
+                .map(flow=>flow.name)
+        );
 
         lastFlows = flowsInfo.loadedFlowAndSubflowNames;
 
@@ -342,19 +395,16 @@ async function main() {
             flowsDir: path.resolve(basePath, 'flows'),
             envNodesDir: path.resolve(basePath, 'envnodes'),
             flowFile: path.resolve(basePath, RED.settings.flowFile || 'flows_'+os.hostname()+'.json'),
-            project: project
+            project: project,
+            flowManagerCfg: path.resolve(basePath, 'flow-manager-cfg.json'),
+            configNodesFilePathWithoutExtension: path.resolve(basePath, 'config-nodes'),
+            nodesOrderFilePath: path.resolve(basePath, 'flow-manager-nodes-order.json'),
         });
-        directories.flowVisibilityJsonFilePath = path.resolve(directories.basePath, 'flow_visibility.json')
-
-        directories.defaultEnvNodeFilePath = path.resolve(directories.envNodesDir, 'default.jsonata');
-        directories.currentEnvNodeFilePath = path.resolve(directories.envNodesDir, process.env.NODE_ENV + '.jsonata');
-
-        directories.configNodesFilePathWithoutExtension = path.resolve(basePath, 'config-nodes');
 
         // Read flow-manager settings
         let needToSaveFlowManagerSettings = false;
         try {
-            const fileJson = await fs.readJson(directories.flowVisibilityJsonFilePath);
+            const fileJson = await fs.readJson(directories.flowManagerCfg);
 
             // Backwards compatibility
             if(Array.isArray(fileJson)) {
@@ -375,35 +425,61 @@ async function main() {
             }
         }
         if(needToSaveFlowManagerSettings) {
-            await fs.outputFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings));
+            await fs.outputFile(directories.flowManagerCfg, stringifyFormattedFileJson(flowManagerSettings));
         }
 
         directories.configNodesFilePath = directories.configNodesFilePathWithoutExtension + '.' + flowManagerSettings.fileFormat;
 
         // Loading ENV configuration for nodes
         directories.nodesEnvConfig = {};
-        for(const cfgPath of [directories.defaultEnvNodeFilePath, directories.currentEnvNodeFilePath]) {
-            try {
-                const fileContents = await fs.readFile(cfgPath, 'UTF-8');
+        const envNodeResolutionPromises = [];
+        for(const envNodeFileName of await fs.readdir(directories.envNodesDir)) {
+            const ext = envNodeFileName.substring(envNodeFileName.lastIndexOf('.')+1);
+            const fileExtIndex = ["jsonata", "json", "js"].indexOf(ext);
+            if(fileExtIndex === -1) continue;
+
+            envNodeResolutionPromises.push((async ()=>{
+                const absoluteFilePath = path.resolve(directories.envNodesDir, envNodeFileName);
+
+                let result = null;
                 try {
-                    const jsonataResult = jsonata(fileContents).evaluate({
-                        require: require,
-                        basePath: directories.basePath
-                    });
-                    Object.assign(directories.nodesEnvConfig, jsonataResult);
+                    switch (fileExtIndex) {
+                        case 0: { // jsonata
+                            const fileContents = await fs.readFile(absoluteFilePath, 'UTF-8');
+                            result = jsonata(fileContents).evaluate({
+                                require: require,
+                                basePath: directories.basePath
+                            });
+                            break
+                        } case 1: {
+                            const fileContents = await fs.readFile(absoluteFilePath, 'UTF-8');
+                            result = JSON.parse(fileContents);
+                            break
+                        } case 2: {
+                            const jsFile = require(absoluteFilePath);
+                            if(isObject(jsFile)) {
+                                result = jsFile;
+                            } else if(typeof jsFile === 'function') {
+                                const returnedVal = jsFile(RED);
+                                if(returnedVal instanceof Promise) {
+                                    result = await returnedVal;
+                                } else {
+                                    result = returnedVal;
+                                }
+                            }
+                            break
+                        }
+                    }
+
                 } catch(e) {
                     nodeLogger.error('JSONata parsing failed for env nodes:\n', e);
                 }
-            } catch(e) {}
+
+                return result;
+            })());
         }
-        directories.savedEnvConfig = {};
-        for(const nodeSelector of Object.keys(directories.nodesEnvConfig)) {
-            const reducedArray = [{}].concat(Object.keys(directories.nodesEnvConfig[nodeSelector]));
-            directories.savedEnvConfig[nodeSelector] = reducedArray.reduce((a,v)=>{
-                a[v] = "";
-                return a
-            });
-        }
+        const results = await Promise.all(envNodeResolutionPromises);
+        results.forEach(result=>{Object.assign(directories.nodesEnvConfig, result)});
 
         await fs.ensureDir(directories.flowsDir);
         await fs.ensureDir(directories.subflowsDir);
@@ -428,16 +504,20 @@ async function main() {
         const retVal = {
             flows: [],
             rev: null,
-            flowHashes: {},
-            subflowHashes: {},
+            flowVersions: {},
+            subflowVersions: {},
+            globalVersion: null,
             loadedFlowAndSubflowNames: {}
         }
 
         let flowJsonSum = {
             tabs: [],
             subflows: [],
+            groups: [],
             global: [],
-            nodes: []
+            groupedNodes: [],
+            nodes: [],
+            byNodeId: {}
         };
 
         let items = await readAllFlowFileNames('flow');
@@ -453,7 +533,11 @@ async function main() {
                 const itemWithoutExt = algoFlowFileName.substring(0, algoFlowFileName.lastIndexOf('.'));
                 if(!algoFlowFileName.toLowerCase().match(/.*\.(json)|(yaml)$/g)) continue;
                 const flowJsonFile = await readFlowFile(path.join(directories.flowsDir, algoFlowFileName));
-                retVal.flowHashes[itemWithoutExt] = calculateRevision(flowJsonFile.str);
+
+                retVal.flowVersions[itemWithoutExt] = {
+                    rev: calculateRevision(flowJsonFile.str),
+                    mtime: flowJsonFile.mtime
+                };
 
                 // Ignore irrelevant flows (filter flows functionality)
                 if(flowsToShow && flowsToShow.length && flowsToShow.indexOf(itemWithoutExt) === -1) {
@@ -462,13 +546,19 @@ async function main() {
 
                 // find tab node
                 let tab = null;
-                for(let i=0; i<flowJsonFile.obj.length; i++) {
+                for(let i=flowJsonFile.obj.length-1; i>=0; i--) {
                     const node = flowJsonFile.obj[i];
+                    flowJsonSum.byNodeId[node.id] = node;
                     if(node.type === 'tab') {
                         flowJsonSum.tabs.push(node);
                         flowJsonFile.obj.splice(i, 1);
                         tab = node;
-                        break;
+                    } else if(node.type === 'group') {
+                        flowJsonFile.obj.splice(i, 1);
+                        flowJsonSum.groups.push(node);
+                    } else if(typeof node.g === "string") {
+                        flowJsonFile.obj.splice(i, 1);
+                        flowJsonSum.groupedNodes.push(node);
                     }
                 }
 
@@ -492,13 +582,19 @@ async function main() {
 
                 // find subflow node
                 let subflowNode = false;
-                for(let i=0; i<flowJsonFile.obj.length; i++) {
+                for(let i=flowJsonFile.obj.length-1; i>=0; i--) {
                     const node = flowJsonFile.obj[i];
+                    flowJsonSum.byNodeId[node.id] = node;
                     if(node.type === 'subflow') {
                         flowJsonSum.subflows.push(node);
                         flowJsonFile.obj.splice(i, 1);
                         subflowNode = node;
-                        break;
+                    } else if(node.type === 'group') {
+                        flowJsonFile.obj.splice(i, 1);
+                        flowJsonSum.groups.push(node);
+                    } else if(typeof node.g === "string") {
+                        flowJsonFile.obj.splice(i, 1);
+                        flowJsonSum.groupedNodes.push(node);
                     }
                 }
                 if(!subflowNode) {throw new Error("Could not find subflow node in flow file")}
@@ -506,7 +602,10 @@ async function main() {
                 Array.prototype.push.apply(flowJsonSum.nodes, flowJsonFile.obj);
 
                 const itemWithoutExt = subflowFileName.substring(0, subflowFileName.lastIndexOf('.'));
-                retVal.subflowHashes[itemWithoutExt] = calculateRevision(flowJsonFile.str);
+                retVal.subflowVersions[itemWithoutExt] = {
+                    rev: calculateRevision(flowJsonFile.str),
+                    mtime: flowJsonFile.mtime
+                };
                 retVal.loadedFlowAndSubflowNames[subflowNode.id] = {type: subflowNode.type, name: subflowNode.name};
 
             } catch (e) {
@@ -517,13 +616,44 @@ async function main() {
         // read config nodes
         try {
             const configFlowFile = await readConfigFlowFile();
-            revisions.global = calculateRevision(configFlowFile.str);
+            retVal.globalVersion = {
+                rev: calculateRevision(configFlowFile.str),
+                mtime: configFlowFile.mtime
+            };
+            for(const node of configFlowFile.obj) {
+                flowJsonSum.byNodeId[node.id] = node;
+            }
             Array.prototype.push.apply(flowJsonSum.global, configFlowFile.obj);
         } catch(e) {
-            revisions.global = null;
+            const emptyGlobalFlowObj = [];
+            retVal.globalVersion = {
+                rev: calculateRevision(calculateRevision(JSON.stringify(emptyGlobalFlowObj))),
+                mtime: null
+            };
+            Array.prototype.push.apply(flowJsonSum.global, emptyGlobalFlowObj);
         }
 
-        retVal.flows = [...flowJsonSum.tabs, ...flowJsonSum.subflows, ...flowJsonSum.global, ...flowJsonSum.nodes];
+        let orderedNodes = [];
+        try {
+            const unorderedNodesLeft = Object.assign({}, flowJsonSum.byNodeId);
+            const nodesOrderArray = await fs.readJson(directories.nodesOrderFilePath);
+            for(const nodeId of nodesOrderArray) {
+                const theNode = flowJsonSum.byNodeId[nodeId];
+                if(theNode) {
+                    orderedNodes.push(theNode);
+                    delete unorderedNodesLeft[nodeId];
+                }
+            }
+
+            for(const missingNodeId in unorderedNodesLeft) {
+                orderedNodes.push(unorderedNodesLeft[missingNodeId]);
+            }
+        } catch (e) {
+            // No ordering file exists, at least come up with a similar order
+            orderedNodes = [...flowJsonSum.tabs, ...flowJsonSum.subflows, ...flowJsonSum.groups, ...flowJsonSum.global, ...flowJsonSum.groupedNodes, ...flowJsonSum.nodes];
+        }
+
+        retVal.flows = orderedNodes;
 
         const nodesEnvConfig = directories.nodesEnvConfig;
 
@@ -533,9 +663,7 @@ async function main() {
                 // If no patch exists for this id
                 if(!node) continue;
 
-                const foundNodeEnvConfig =
-                    (node.name && nodesEnvConfig["name:"+node.name]) ||
-                    (node.id && nodesEnvConfig[node.id]);
+                const foundNodeEnvConfig = getNodesEnvConfigForNode(node);
 
                 if(foundNodeEnvConfig) {
                     Object.assign(node, foundNodeEnvConfig);
@@ -637,36 +765,43 @@ async function main() {
     });
 
     async function getFlowState(type, flowName) {
-        const wasLoadedOnDemand = type === 'flow' && onDemandFlowsManager.onDemandFlowsSet.has(flowName)
 
-        let flowFileStr;
+        let flowFile
         try {
-            flowFileStr = (await readFlowByNameAndType(type, flowName, true)).str;
+            flowFile = await readFlowByNameAndType(type, flowName, true);
         } catch (e) {
-            return null;
+            const flowObj = [];
+            flowFile = {obj:flowObj, str:JSON.stringify(flowObj), mtime: null};
         }
 
         const retVal = {};
 
-        let lastLoadedFlowRevision;
+        let lastLoadedFlowVersionInfo;
         if(type==='flow') {
-            lastLoadedFlowRevision = revisions.byFlowName[flowName];
+            lastLoadedFlowVersionInfo = revisions.byFlowName[flowName];
             // If flow was not deployed either "on-demend" or passed filtering, we determine that it was not deployed.
-            retVal.deployed = wasLoadedOnDemand || !flowManagerSettings.filter.length || flowManagerSettings.filter.indexOf(flowName) !== -1
+            const wasLoadedOnDemand = type === 'flow' && onDemandFlowsManager.onDemandFlowsSet.has(flowName)
+            retVal.deployed = deployedFlowNames.has(flowName);
+            retVal.onDemand = wasLoadedOnDemand;
         } else if(type==='subflow') {
-            lastLoadedFlowRevision = revisions.bySubflowName[flowName];
+            lastLoadedFlowVersionInfo = revisions.bySubflowName[flowName];
             retVal.deployed = true;
         } else if(type==='global') {
-            lastLoadedFlowRevision = revisions.global;
+            lastLoadedFlowVersionInfo = revisions.global;
             retVal.deployed = true;
         } else {
             return null;
         }
 
-        const fileRev = calculateRevision(flowFileStr);
-        retVal.hasUpdate = fileRev !== lastLoadedFlowRevision;
+        const fileRev = calculateRevision(flowFile.str);
+        retVal.rev = fileRev
+        retVal.mtime = flowFile.mtime;
+        retVal.hasUpdate = fileRev !== lastLoadedFlowVersionInfo.rev;
 
-        retVal.onDemand = wasLoadedOnDemand;
+        if(retVal.hasUpdate) {
+            retVal.oldRev = lastLoadedFlowVersionInfo.rev;
+            retVal.oldMtime = lastLoadedFlowVersionInfo.mtime
+        }
 
         return retVal;
     }
@@ -730,17 +865,49 @@ async function main() {
         }
     });
 
-    RED.httpAdmin.post( '/'+nodeName+'/flows', async function (req, res) {
+    function isObject (value) {
+        return value && typeof value === 'object' && value.constructor === Object;
+    }
+
+    RED.httpAdmin.post( '/'+nodeName+'/flows', async function loadFlowsOnDemand(req, res) {
         try {
+            if(!isObject(req.body) || !req.body.action) return res.status(400).send({"error":  'missing "action" key'});
+
+            const allFlows = await readAllFlowFileNamesWithoutExt('flow');
+
+            const filterChosenFlows = (!flowManagerSettings.filter || flowManagerSettings.filter.length === 0) ?
+                allFlows :
+                flowManagerSettings.filter;
+
             // calculate which flows to load (null means all flows, no filtering)
             let flowsToShow;
-            const requestedToLoadAll = !req.body || req.body.length <= 0 || !Array.isArray(req.body);
+
+            const requestedToLoadAll = req.body.action === 'loadAll';
+            const reloadOnly = req.body.action === 'reloadOnly';
+
+            const removeOndemand = req.body.action === 'removeOndemand' && req.body.flows;
+            const addOndemand = req.body.action === 'addOndemand' && req.body.flows;
+            const replaceOndemand = req.body.action === 'replaceOndemand' && req.body.flows;
+
+
             if(requestedToLoadAll) {
-                flowsToShow = await readAllFlowFileNamesWithoutExt('flow');
-            } else {
+                flowsToShow = allFlows;
+            } else if(reloadOnly) {
+                flowsToShow = [...filterChosenFlows, ...Array.from(onDemandFlowsManager.onDemandFlowsSet)];
+            } else if(removeOndemand) {
+                const newSet = new Set(onDemandFlowsManager.onDemandFlowsSet);
+                for(const undeployFlow of removeOndemand) {
+                    newSet.delete(undeployFlow);
+                }
+                flowsToShow = [...filterChosenFlows, ...Array.from(newSet)];
+            } else if(addOndemand || replaceOndemand) {
                 flowsToShow = Array.from(
-                    new Set([...flowManagerSettings.filter, ...req.body].concat(Array.from(onDemandFlowsManager.onDemandFlowsSet)))
+                    new Set([...filterChosenFlows, ...req.body.flows,
+                        ...(addOndemand?Array.from(onDemandFlowsManager.onDemandFlowsSet):[])
+                    ])
                 );
+            } else {
+                return res.status(400).send({"error":  'malformed action request, could be missing "flows" array'})
             }
 
             // calculate which of the loaded flows are "on-demand" flows
@@ -761,21 +928,22 @@ async function main() {
         }
     });
 
-    RED.httpAdmin.patch( '/'+nodeName+'/flow_visibility', bodyParser.json(), async function (req, res) {
-        const patchObj = req.body;
+    RED.httpAdmin.get( '/'+nodeName+'/filter-flows', bodyParser.json(), async function (req, res) {
+        res.send(flowManagerSettings.filter);
+    });
+
+    RED.httpAdmin.put( '/'+nodeName+'/filter-flows', bodyParser.json(), async function (req, res) {
+        const filterArray = req.body;
         try {
-            Object.assign(flowManagerSettings, patchObj);
+            flowManagerSettings.filter = filterArray;
             await onDemandFlowsManager.updateOnDemandFlowsSet(new Set());
-            await fs.outputFile(directories.flowVisibilityJsonFilePath, stringifyFormattedFileJson(flowManagerSettings));
+            await fs.outputFile(directories.flowManagerCfg, stringifyFormattedFileJson(flowManagerSettings));
             await loadFlows(flowManagerSettings.filter, false);
             res.send({});
         } catch(e) {
             res.status(404).send();
         }
     });
-
-    // serve libs
-    RED.httpAdmin.use( '/'+nodeName+'/flow_visibility', serveStatic(path.join(directories.basePath, "flow_visibility.json")) );
 
     initialLoadPromise.resolve();
     initialLoadPromise = null;
