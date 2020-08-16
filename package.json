@@ -1,6 +1,6 @@
 {
   "name": "node-red-contrib-flow-manager",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "node-red": {
     "nodes": {
       "flow-manager": "flow-manager.js"
@@ -10,6 +10,7 @@
     "start": "build "
   },
   "dependencies": {
+    "axios": "0.19.2",
     "body-parser": "^1.0.0",
     "eol": "^0.9.1",
     "fs-extra": "^9.0.1",
@@ -28,7 +29,10 @@
     "monogoto.io",
     "monogoto",
     "flow",
-    "manager"
+    "manager",
+    "Alon",
+    "Amir",
+    "aabluedragon"
   ],
   "author": "monogoto.io",
   "license": "AGPL-3.0-or-later"

@@ -9,6 +9,7 @@ const path = require('path')
     , child_process = require('child_process')
     , crypto = require('crypto')
     , debounce = require('./debounce')
+    , axios = require('axios')
 ;
 
 function execShellCommand(cmd) {
@@ -225,14 +226,39 @@ PRIVATERED.runtime.storage.saveFlows = async function newSaveFlows(data) {
 
 const flowManagerSettings = {};
 
-async function writeFlowFile(filePath, flowObject) {
+async function writeFlowFile(filePath, flowStrOrObject) {
     let str;
-    if(flowManagerSettings.fileFormat === 'yaml') {
-        str = YAML.safeDump(flowObject);
-    } else {
-        str = stringifyFormattedFileJson(flowObject);
+
+    async function isReallyChanged(newObj) {
+        try {
+            const oldObj = (await readFlowFile(filePath)).obj;
+            const oldSet = new Set(oldObj.map(item=>JSON.stringify(item)));
+            const newSet = new Set(newObj.map(item=>JSON.stringify(item)));
+
+            if (oldSet.size !== newSet.size) return true;
+            newSet.forEach(function (item) {
+                if (!oldSet.has(item)) throw 'Found change';
+            })
+        } catch (e) {
+            return true;
+        }
     }
-    await fs.outputFile(filePath, str);
+
+    let changed;
+    if (typeof flowStrOrObject === 'string' || flowStrOrObject instanceof String) {
+        changed = await isReallyChanged(filePath.endsWith('.yaml')?YAML.safeLoad(flowStrOrObject):JSON.parse(flowStrOrObject));
+        str = flowStrOrObject;
+    } else if(flowManagerSettings.fileFormat === 'yaml') {
+        changed = await isReallyChanged(flowStrOrObject);
+        str = YAML.safeDump(flowStrOrObject);
+    } else {
+        changed = await isReallyChanged(flowStrOrObject);
+        str = stringifyFormattedFileJson(flowStrOrObject);
+    }
+
+    if(changed) {
+        await fs.outputFile(filePath, str);
+    }
     return str;
 }
 
@@ -525,7 +551,7 @@ async function main() {
         if(flowsToShow === null) {
             flowsToShow = flowManagerSettings.filter;
         }
-        nodeLogger.info('Flow visibility file state:', flowsToShow);
+        nodeLogger.info('Flow filtering state:', flowsToShow);
 
         // read flows
         for(const algoFlowFileName of items) {
@@ -613,9 +639,15 @@ async function main() {
             }
         }
 
-        // read config nodes
-        try {
-            const configFlowFile = await readConfigFlowFile();
+        {
+            // read config nodes
+            let configFlowFile;
+            try {
+                configFlowFile  = await readConfigFlowFile();
+            } catch(e) {
+                await writeFlowFile(directories.configNodesFilePathWithoutExtension+'.'+flowManagerSettings.fileFormat, []);
+                configFlowFile  = await readConfigFlowFile();
+            }
             retVal.globalVersion = {
                 rev: calculateRevision(configFlowFile.str),
                 mtime: configFlowFile.mtime
@@ -624,32 +656,27 @@ async function main() {
                 flowJsonSum.byNodeId[node.id] = node;
             }
             Array.prototype.push.apply(flowJsonSum.global, configFlowFile.obj);
-        } catch(e) {
-            const emptyGlobalFlowObj = [];
-            retVal.globalVersion = {
-                rev: calculateRevision(calculateRevision(JSON.stringify(emptyGlobalFlowObj))),
-                mtime: null
-            };
-            Array.prototype.push.apply(flowJsonSum.global, emptyGlobalFlowObj);
         }
 
-        let orderedNodes = [];
+        let orderedNodes = null;
         try {
-            const unorderedNodesLeft = Object.assign({}, flowJsonSum.byNodeId);
+            const unorderedNodesLeft = new Set(Object.keys(flowJsonSum.byNodeId));
             const nodesOrderArray = await fs.readJson(directories.nodesOrderFilePath);
+            orderedNodes = []
             for(const nodeId of nodesOrderArray) {
                 const theNode = flowJsonSum.byNodeId[nodeId];
                 if(theNode) {
                     orderedNodes.push(theNode);
-                    delete unorderedNodesLeft[nodeId];
+                    unorderedNodesLeft.delete(nodeId);
                 }
             }
 
-            for(const missingNodeId in unorderedNodesLeft) {
-                orderedNodes.push(unorderedNodesLeft[missingNodeId]);
+            if(unorderedNodesLeft.size>0) {
+                orderedNodes = null;
             }
-        } catch (e) {
-            // No ordering file exists, at least come up with a similar order
+        } catch (e) {}
+        if(!orderedNodes) {
+            // No ordering exists, at least come up with a similar order
             orderedNodes = [...flowJsonSum.tabs, ...flowJsonSum.subflows, ...flowJsonSum.groups, ...flowJsonSum.global, ...flowJsonSum.groupedNodes, ...flowJsonSum.nodes];
         }
 
@@ -676,6 +703,11 @@ async function main() {
             nodeLogger.info('Loading subflows:', subflowItems);
             try {
                 retVal.rev = await PRIVATERED.nodes.setFlows(retVal.flows, null, 'flows');
+
+                revisions.byFlowName = retVal.flowVersions;
+                revisions.bySubflowName = retVal.subflowVersions;
+                revisions.global = retVal.globalVersion;
+
                 nodeLogger.info('Finished setting node-red nodes successfully.');
             } catch (e) {
                 nodeLogger.error('Failed setting node-red nodes\r\n' + e.stack||e);
@@ -734,12 +766,6 @@ async function main() {
             await Promise.all(fileWritePromises);
             nodeLogger.info('flow-manager migration complete.');
         }
-
-        // Delete flows json file (will be replaced with our flow manager logic (filters & combined separate flow json files)
-        // fs.remove(directories.flowFile).then(function () {
-        //     nodeLogger.info('Deleted previous flows json file.');
-        //     return Promise.resolve();
-        // }).catch(function () {return Promise.resolve();})
     }
 
     await startFlowManager();
@@ -754,7 +780,7 @@ async function main() {
         }, 500));
     }
 
-    RED.httpAdmin.get( '/'+nodeName+'/flow-names', async function (req, res) {
+    RED.httpAdmin.get( '/'+nodeName+'/flow-names', RED.auth.needsPermission("flows.read"), async function (req, res) {
         try {
             let flowFiles = await fs.readdir(path.join(directories.basePath, "flows"));
             flowFiles = flowFiles.filter(file=>file.toLowerCase().match(/.*\.(json)|(yaml)$/g));
@@ -770,8 +796,7 @@ async function main() {
         try {
             flowFile = await readFlowByNameAndType(type, flowName, true);
         } catch (e) {
-            const flowObj = [];
-            flowFile = {obj:flowObj, str:JSON.stringify(flowObj), mtime: null};
+            return null
         }
 
         const retVal = {};
@@ -796,9 +821,9 @@ async function main() {
         const fileRev = calculateRevision(flowFile.str);
         retVal.rev = fileRev
         retVal.mtime = flowFile.mtime;
-        retVal.hasUpdate = fileRev !== lastLoadedFlowVersionInfo.rev;
+        retVal.hasUpdate = !lastLoadedFlowVersionInfo || fileRev !== lastLoadedFlowVersionInfo.rev;
 
-        if(retVal.hasUpdate) {
+        if(retVal.hasUpdate && lastLoadedFlowVersionInfo) {
             retVal.oldRev = lastLoadedFlowVersionInfo.rev;
             retVal.oldMtime = lastLoadedFlowVersionInfo.mtime
         }
@@ -819,27 +844,16 @@ async function main() {
         }
     }
 
-    RED.httpAdmin.get( '/'+nodeName+'/flows/:type/:flowName', async function (req, res) {
+    RED.httpAdmin.get( '/'+nodeName+'/states/:type/:flowName?', RED.auth.needsPermission("flows.read"), async function (req, res) {
         try {
-            if(['subflow', 'flow', 'global'].indexOf(req.params.type) !== -1) {
-                const state = await getFlowState(req.params.type, req.params.flowName);
-                if(state) {
-                    return res.send(state);
-                } else {
-                    return res.status(404).send({error: `No such ${req.params.type} file`});
+            if(['flow', 'subflow', 'global'].indexOf(req.params.type) !== -1) {
+                let retVal;
+                if(req.params.flowName) {
+                    retVal = await getFlowState(req.params.type, req.params.flowName);
+                }  else {
+                    retVal = await getFlowStateForType(req.params.type);
                 }
-            } else {
-                return res.status(404).send({error: `Unrecognised flow type: ${req.params.type}`});
-            }
-        } catch (e) {
-            return res.status(404).send();
-        }
-    });
 
-    RED.httpAdmin.get( '/'+nodeName+'/flows/:type', async function (req, res) {
-        try {
-            if(['subflow', 'flow', 'global'].indexOf(req.params.type) !== -1) {
-                const retVal = await getFlowStateForType(req.params.type);
                 if(retVal) {
                     return res.send(retVal);
                 } else {
@@ -853,10 +867,10 @@ async function main() {
         }
     });
 
-    RED.httpAdmin.get( '/'+nodeName+'/flows', async function (req, res) {
+    RED.httpAdmin.get( '/'+nodeName+'/states', RED.auth.needsPermission("flows.read"), async function (req, res) {
         try {
             const retVal = {};
-            for(const flowType of ['subflow', 'flow', 'global']) {
+            for(const flowType of ['flow', 'subflow', 'global']) {
                 retVal[flowType] = await getFlowStateForType(flowType);
             }
             return res.send(retVal);
@@ -869,7 +883,47 @@ async function main() {
         return value && typeof value === 'object' && value.constructor === Object;
     }
 
-    RED.httpAdmin.post( '/'+nodeName+'/flows', async function loadFlowsOnDemand(req, res) {
+
+
+    RED.httpAdmin.all('/'+nodeName+'/remotes/:remoteName/**', [RED.auth.needsPermission("flows.read"), RED.auth.needsPermission("flows.write"), bodyParser.text({limit: "50mb", type: '*/*'})], async function (req, res) {
+
+        try {
+            const remote = flowManagerSettings.remoteDeploy.remotes.find(remote=> remote.name === req.params.remoteName);
+            if(!remote) {throw new Error("Remote not found")}
+
+            const toCutAfter = `/flow-manager/remotes/${req.params.remoteName}`;
+            const appendUrl = req.url.substring(req.url.indexOf(toCutAfter)+toCutAfter.length);
+
+            const nrAddressWithSlash = remote.nrAddress.endsWith('/')?remote.nrAddress:(remote.nrAddress+'/');
+
+            const remotePathUrl = nrAddressWithSlash+'flow-manager'+appendUrl;
+
+            const remoteResponse = await axios({
+                method: req.method,
+                url: remotePathUrl.toString(),
+                headers: req.headers,
+                data: req.body,
+                transformResponse: [] // Disabling force json parsing
+            })
+
+            if(req.headers.accept === 'text/plain') {
+                res = res.contentType('text/plain');
+            } else {
+                res = res.contentType(flowManagerSettings.fileFormat.toLowerCase() === 'yaml'? 'application/x-yaml':'application/json');
+            }
+            return res.status(remoteResponse.status).send(remoteResponse.data);
+
+        } catch (e) {
+            try {
+                return res.status(e.response.status).send(e.response.data);
+            } catch (e) {
+                return res.status(400).send({"error": "Unknown communication failure"});
+            }
+
+        }
+    });
+
+    RED.httpAdmin.post( '/'+nodeName+'/states', RED.auth.needsPermission("flows.write"), async function loadFlowsOnDemand(req, res) {
         try {
             if(!isObject(req.body) || !req.body.action) return res.status(400).send({"error":  'missing "action" key'});
 
@@ -913,26 +967,23 @@ async function main() {
             // calculate which of the loaded flows are "on-demand" flows
             await onDemandFlowsManager.updateOnDemandFlowsSet(new Set(flowsToShow));
 
-            const loadFlowsPromise = (async function loadAndSetFlows() {
-                const loadedFlowsInfo = await loadFlows(flowsToShow, true);
-                const flowJson = loadedFlowsInfo.flows;
-                if(flowJson && Array.isArray(flowJson) && flowJson.length) {
-                    await PRIVATERED.nodes.setFlows(flowJson, null, 'flows');
-                }
-            })();
+            await loadFlows(flowsToShow);
 
-            await loadFlowsPromise;
             res.send({"status": "ok"});
         } catch(e) {
-            res.status(404).send({error: e.stack});
+            res.status(404).send({error: e.message});
         }
     });
 
-    RED.httpAdmin.get( '/'+nodeName+'/filter-flows', bodyParser.json(), async function (req, res) {
+    RED.httpAdmin.get('/'+nodeName+'/cfg', RED.auth.needsPermission("flows.read"), async function (req, res) {
+        res.send(await fs.readJson(directories.flowManagerCfg));
+    });
+
+    RED.httpAdmin.get( '/'+nodeName+'/filter-flows', RED.auth.needsPermission("flows.read"), async function (req, res) {
         res.send(flowManagerSettings.filter);
     });
 
-    RED.httpAdmin.put( '/'+nodeName+'/filter-flows', bodyParser.json(), async function (req, res) {
+    RED.httpAdmin.put( '/'+nodeName+'/filter-flows', RED.auth.needsPermission("flows.read"), async function (req, res) {
         const filterArray = req.body;
         try {
             flowManagerSettings.filter = filterArray;
@@ -944,6 +995,83 @@ async function main() {
             res.status(404).send();
         }
     });
+
+    async function handleFlowFile(req, res) {
+        try {
+            const type = req.params.type;
+            const flowTypes = ['flows','subflows','global'];
+            let indexOfFlowType = flowTypes.indexOf(type);
+            if(indexOfFlowType === -1) {
+                // try singular
+                indexOfFlowType = ['flow','subflow'].indexOf(type);
+            }
+
+            let pathToWrite = indexOfFlowType===0? directories.flowsDir:
+                indexOfFlowType===1? directories.subflowsDir:
+                    indexOfFlowType===2? (directories.configNodesFilePathWithoutExtension+'.'+flowManagerSettings.fileFormat) :'';
+
+            let fullPath;
+            if(indexOfFlowType === 2) {
+                fullPath = pathToWrite;
+            } else {
+                const fileName = req.params.fileName;
+                if(!fileName || fileName.indexOf('..') !== -1 || fileName.indexOf('/') !== -1 || fileName.indexOf('\\') !== -1) {
+                    return res.status(400).send({error:"Flow file illegal"});
+                }
+                fullPath = path.resolve(pathToWrite, fileName+'.'+flowManagerSettings.fileFormat);
+            }
+
+            if(indexOfFlowType === -1) {
+                return res.status(400).send({error:"Unrecognized flow type, please use one of "+JSON.stringify(flowTypes).split('"').join("")});
+            } else if(!fullPath) {
+                return res.status(400).send({error:"malformed flow filename"});
+            }
+
+            if(req.method === 'GET') {
+
+                if(!await fs.pathExists(fullPath)) {
+                    return res.status(404).send({error:"Flow file not found"});
+                }
+
+                const str= (await readFlowFile(fullPath, true)).str;
+                if(req.headers.accept === 'text/plain') {
+                    return res.contentType('text/plain').send(str);
+                } else {
+                    return res.contentType(flowManagerSettings.fileFormat.toLowerCase() === 'yaml'? 'application/x-yaml':'application/json').send(str);
+                }
+
+            } else if(req.method === 'POST') {
+                await writeFlowFile(fullPath, req.body);
+                const mtime = req.query.mtime;
+                const atime = req.query.atime;
+
+                if(mtime || atime) {
+                    await fs.utimes(fullPath,
+                        atime?new Date(atime):new Date(),
+                        mtime?new Date(mtime):new Date()
+                    );
+                }
+
+            } else if(req.method === 'DELETE') {
+                if(!await fs.pathExists(fullPath)) {
+                    return res.status(404).send({error:"Delete failed, Flow file not found"});
+                }
+                await fs.remove(fullPath)
+            } else {
+                return res.status(400).send({error:"Unknown method"});
+            }
+
+            res.send({status:"ok"});
+        } catch (e) {
+            res.status(400).send({error:e.message});
+        }
+    }
+
+    RED.httpAdmin.delete('/'+nodeName+'/flow-files/:type/:fileName?', RED.auth.needsPermission("flows.write"), handleFlowFile);
+
+    RED.httpAdmin.post( '/'+nodeName+'/flow-files/:type/:fileName?', [RED.auth.needsPermission("flows.write"), bodyParser.text({limit:"50mb", type: '*/*'})], handleFlowFile);
+
+    RED.httpAdmin.get( '/'+nodeName+'/flow-files/:type/:fileName?', RED.auth.needsPermission("flows.read"), handleFlowFile);
 
     initialLoadPromise.resolve();
     initialLoadPromise = null;

@@ -1,3 +1,24 @@
+#### 0.7.0 Flow handling enhancements
+
+##### Features
+- Remote Deployment to external Node-RED instances.
+- envnodes supporting types .js .jsonata .json
+- envnodes: can put as many files as the user wishes, no need to use filename "default".
+- using js, you can "module.exports" the object immediately, or use a function to return the object. the function can be async.
+- external flow loading on-demand All calls are on POST method, supporting {"action":"loadAll"/"reloadOnly"} and {"action":"removeOndemand"/"addOndemand"/"replaceOndemand", "flows: ["Flow 1","Flow 2"...]}
+- Added RESTful calls (refer to README.md)
+
+##### Improvements
+- All RESTful calls protected with RED.auth.needsPermission (flows.write / flows.read)
+- Documented all REST methods
+- flow_visibility.json renamed to flow-manager-cfg.json
+- added file flow-manager-nodes-order.json to keep nodes order, to remain in sync with UI nodes order, and avoid false-positives of "flows are not up to date" in UI.
+- Changed filter-flows popup: compatible with all jQuery supported browsers (instead of chrome only), and flows selection is now "draggable" so you don't have to tick every flow you want separately.
+- Improved flows state logic and representation: deployed/rev/mtime/hasUpdate/[oldRev/oldMtime] mtime means modified time of file.
+
+##### Fixes
+- fixed restriction of envnodes locked properties, and better popup description on UI when user is trying to modify them.
+
 #### 0.6.0 Flow handling enhancements
 
 - Performance improvements during deploys. 

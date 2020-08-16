@@ -38,20 +38,21 @@ The nodes will be stored in the following subdirectories of your Node-RED path a
 * `/flows/`**`flow name`**
 * `/subflows/`**`subflow name`**
 * `/config-nodes.json` (global config nodes will be stored here)
+
 It's a good idea to add these paths to your version control system. 
 
-#### ![Filter Flows](filter_flows.png) (Filter Flows Button)
+#### ![Filter Flows](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.0/img/filter_flows_button.png)
 * Allows selecting which flows Node-RED will load, and which will be ignored and not loaded, **not only in Node-RED's UI, also in it's NodeJS process.** <br/>
 * Unselected flows are NOT deleted, only "ignored" until you select them again using `Filter Flows`.
-* Filtering configuration is stored in `flow_visibility.json` file under your Node-RED path.
-* if `flow_visibility.json` file does not exist, or exists but malformed, or contains an empty JSON array, then all flows will be loaded and no filtering is done.
-* ![Filter Flows Popup](filter_flows_popup.png)
+* Filtering configuration is stored in `flow-manager-cfg.json` file under your Node-RED path.
+* if `flow-manager-cfg.json` file does not exist, or exists but malformed, or contains an empty JSON array, then all flows will be loaded and no filtering is done.
+* ![Filter Flows Popup](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.0/img/filter_flows_popup.png)
     
 ### envnodes
-envnodes allows configuration of nodes using an external source.<br/>
+envnodes allows configuration of nodes using an external source and custom logic.<br/>
 example:
-create "envnodes/default.jsonata" in your Node-RED project directory and put these contents:
-```
+create "envnodes/someName.jsonata" in your Node-RED project directory and put these contents:
+```json5
   (
      $config := require(basePath & "/someConfig.json");
      {
@@ -70,13 +71,66 @@ The result would be that your mqtt config node will use values from an external 
 And a topic value will be inserted to an inject node matched with the given name.
 
 Note `basePath` is the path to your Node-RED directory.<br/>
-When using Node-RED's "project mode", the value is the project folder path. 
+When using Node-RED's "project mode", the value is the project folder path.
+
+Supported envnode file ext: .jsonata .js .json
+when using .js you can either module.exports = {...} the object directly, or use a function/async function (for example to read external file) and return an object.<br/>
+js example:
+```javascript
+const fs = require('fs-extra');
+
+module.exports = async function() {
+    const configTopic = await fs.readJson('./config').topic;
+    return {
+        "name:SomeInjectName": {
+            "topic": configTopic
+        },
+        "cff2a203.8158a": {
+            "someProperty": "myProperty"
+        }
+    }
+}
+
+```
 
 Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
+![EnvNodes Warning](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.0/img/envnodes_warning.png)
+
+### Remote Deploy
+![Remote Deploy Button](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.0/img/remote_deploy_button.png)
+If you work in a server-client environment, where you work locally on your flows, and once in a while need to push your local changes to a remote process running Node-RED, this option is indented for that requirement.
+
+Do the following to enable Remote Deployment feature:<br/>
+* Add remote definitions to `flow-manager-cfg.json` (you can add as many as you want, choose any name you wish for each remote)
+    -   ```json
+        {
+          "filter": [],
+          "fileFormat": "json",
+          "remoteDeploy": {
+            "remotes": [
+              {
+                "name": "Production",
+                "nrAddress": "http://yourAddress:1881"
+              },
+              {
+                "name": "Staging",
+                "nrAddress": "http://yourOtherAddress:1881"
+              }
+            ]
+          }
+        }
+        ``` 
+* Restart Node-RED
+* You should see the new "Remote Deploy" button on top of the Node-RED UI.
+
+![Remote Deploy Remote Selection](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.0/img/remote_deploy_select_remote.png)
+
+![Remote Deploy Diff Tool](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.0/img/remote_diff.png)
+
     
 ### YAML flow file format
-You can configure flow-manager to load/save flow files in YAML format instead oj JSON, by modifying file `flow_visibility.json` as such:
-```
+You can configure flow-manager to load/save flow files in YAML format instead oj JSON, by modifying file `flow-manager-cfg.json` as such:
+```json
 {
   ...
   "fileFormat": "yaml"
@@ -86,7 +140,7 @@ You can configure flow-manager to load/save flow files in YAML format instead oj
 The advantage is the code within function node becomes easier to read when inspecting the flow file itself.<br/>
 See comparison below
 * #### YAML
-    ```
+    ```yaml
     - id: 493f0b3.b3b48f4
       type: function
       z: 70dd6be0.e35274
@@ -104,7 +158,7 @@ See comparison below
         - []
     ```
 * #### JSON
-    ```
+    ```json
     {
         "id": "493f0b3.b3b48f4",
         "type": "function",
@@ -121,43 +175,141 @@ See comparison below
     }
     ```
   
-### On Demand flow loading using external RESTful requests
+  
+### flow-manager RESTful API
+
+#### Get all flow names
+```shell script
+curl --request GET \
+  http://localhost:1880/flow-manager/flow-names
+```
+
+Response:
+```json
+  ["Flow 1.json","Flow 2.json","Flow 3.json","Flow 4.json"]
+```
+
+#### Get flow-manager-cfg.json contents
+```shell script
+curl --request GET \
+  http://localhost:1880/flow-manager/cfg
+```
+
+#### get / change filter flows
+get
+```shell script
+curl --request GET \
+  http://localhost:1880/flow-manager/filter-flows
+```
+change
+```shell script
+curl --header "Content-Type: application/json" \
+  --request PUT \
+  --data '["Flow 1", "Flow 2"]' \
+  http://localhost:1880/flow-manager/filter-flows
+```
+
+#### Modify flow files (add, update, delete any flow/subflow files)
+
+Request URL template:
+
+```
+http://localhost:1880/flow-manager/flow-files/:type/:fileName?
+```
+`type` can be `flow`/`subflow`/`global`<br/>
+can pass plural too: `flows`/`subflows`
+
+Notice `fileName` is optional if you request "global" flow, leave out the `fileName` url part.
+
+get
+```shell script
+curl --request GET \
+  http://localhost:1880/flow-manager/flow-files/flow/MyFlow
+```
+
+delete
+```shell script
+curl --request DELETE \
+  http://localhost:1880/flow-manager/flow-files/flow/MyFlow
+```
+
+add/update (mtime/atime query params are optional, in case you wish to set mtime "Modified Time" or atime "Access Time" after the file is written)
+```shell script
+curl --header "Content-Type: application/json" \
+  --request POST \
+  --data '[{"id":"d4366369.5303d","type":"tab","label":"NewFlow","disabled":false,"info":""}]' \
+  http://localhost:1880/flow-manager/flow-files/flow/NewFlow
+```
+
+Example with mtime query param:
+```shell script
+curl --header "Content-Type: application/json" \
+  --request POST \
+  --data '[{"id":"d4366369.5303d","type":"tab","label":"NewFlow","disabled":false,"info":""}]' \
+  'http://localhost:1880/flow-manager/flow-files/flows/NewFlow?mtime=8/16/2020,%206:12:17%20PM'
+```
+
+#### On Demand flow loading using external RESTful requests
 During runtime, you can request flow-manager to load any flow file placed in the flows directory,<br/>
 by sending a POST request with the flows you wish to load (regardless of whether you configured any filter-flows or not)
 
-Example request:<br/>
-```
+Request to deploy all flows / redeploy current flows:<br/>
+```shell script
 curl --header "Content-Type: application/json" \
   --request POST \
-  --data '["Flow1", "Flow2"]' \
-  http://localhost:1880/flow-manager/flows
+  --data '{"action":"loadAll"/"reloadOnly" }' \
+  http://localhost:1880/flow-manager/states
 ```
-Pass an empty json array to load all flows. 
 
-### Retrieve flow states for all flows, subflows, and global nodes (config nodes)
+Request to add/remove/replace any flow:<br/>
+```shell script
+curl --header "Content-Type: application/json" \
+  --request POST \
+  --data '{"action":"addOndemand"/"removeOndemand"/"replaceOndemand" "flows":["Flow 1","Flow 2"] }' \
+  http://localhost:1880/flow-manager/states
+```
+
+#### Retrieve flow states for all flows, subflows, and global nodes (config nodes)
 
 Retrieve state for specific type and flow.<br/>
-`http://localhost:1880/flow-manager/flows/:type/:flowName`
-
+`http://localhost:1880/flow-manager/states/:type/:flowName`
 
 Retrieve state for all flows of a given type.<br/>
-`http://localhost:1880/flow-manager/flows/:type`
+`http://localhost:1880/flow-manager/states/:type`
 
 Retrieve state for all flows/subflows/global.<br/>
-`http://localhost:1880/flow-manager/flows/`
+`http://localhost:1880/flow-manager/states/`
 
 `:type` can be subflow/flow/global (if `global`, there's no need for `:flowName`).
 
-Example response for specific flow (`http://localhost:1880/flow-manager/flows/flow/Flow1`)
-```
+Example response for specific flow (`http://localhost:1880/flow-manager/states/flow/Flow1`)
+```json5
 {
     "deployed": true,
-    "hasUpdate": false,
-    "onDemand": false
+    "hasUpdate": true,
+    "onDemand": false,
+    "rev": "477a9952b50e161afdf2e4bb6b84ee31",
+    "mtime": "2020-08-16T13:54:23.000Z",
+    "oldRev": "54d163c840657920aaac705dadecae2b", // If hasUpdate
+    "oldMtime": "2020-08-14T17:30:10.000Z" // If hasUpdate
 }
 ```
 * `deployed` whether that flow file is deployed. 
 * `hasUpdate` whether that flow file was changed externally, and can be deployed again to update.
 * `onDemand` whether that flow was deployed by an OnDemand request, and is not part of filtered flows selection. 
+* `rev/oldRev` revision (checksum) of file.
+* `mtime/oldMtime` Modified Time of file. 
 
+#### Access flow-manager RESTful API on remotes defined in `flow-manager-cfg.json`
 
+Request template:<br/>
+```
+http://localhost:1880/flow-manager/remotes/:remoteName/[append any rest endpoint here]
+```
+
+Example using `flow-names`
+```shell script
+curl --request GET \
+  http://localhost:1880/flow-manager/remotes/Production/flow-names
+
+```
