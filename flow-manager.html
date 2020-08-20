@@ -61,7 +61,15 @@
 </style>
 
 <script type="text/javascript">
-    $(async ()=>{
+    (async ()=>{
+
+        // We use this function for ajax and not the jquery one ($.ajax) because on older nodereds, jquery version of this call does not return promise
+        function ajax(options) {
+            return new Promise(function (resolve, reject) {
+                $.ajax(options).done(resolve).fail(reject);
+            });
+        }
+
         const _nr1Header = $('ul.red-ui-header-toolbar');
         if(_nr1Header.length) {
             _nr1Header.prepend(`
@@ -83,23 +91,16 @@
         }
 
         $('body').prepend(`
-        <div>
-            <dialog id="flow-manager-flows-dialog">
-              <form method="dialog" style="text-align: center">
-                <p>
-                    <div>
-                        <input id="filter-flows-all-flows-input" type="checkbox" name="all" value="all" />
-                        <label for="filter-flows-all-flows-input">Load All</label>
-                    </div>
-                    <hr style="margin: 2pt 0;"/>
-                    <ol id="flow-manager-flows-dialog-options" style="width: 100%;"></ol>
-                </p>
-                <menu>
-                  <button id="filter-flows-confirm">Confirm</button>
-                </menu>
-              </form>
-            </dialog>
-        </div>`);
+            <div id="flow-manager-flows-dialog" style="text-align: center">
+                <div style="margin-bottom: 10pt">
+                    <input id="filter-flows-all-flows-input" type="checkbox" name="all" value="all" />
+                    <label for="filter-flows-all-flows-input">Load All</label>
+                </div>
+                <ol id="flow-manager-flows-dialog-options" style="width: 100%;"></ol>
+                <br/>
+
+                <button id="filter-flows-confirm">Confirm</button>
+            </div>`);
 
 
         RED.comms.subscribe('flow-manager/flow-manager-envnodes-override-attempt', function (topic, envNodePropsChangedByUser) {
@@ -153,7 +154,7 @@
             filterProgressBar.progressbar("option","value", false);
 
             try {
-                await $.ajax({
+                await ajax({
                     url: 'flow-manager/filter-flows',
                     contentType: "application/json",
                     dataType:'json',
@@ -178,10 +179,9 @@
 
         filterFlowsButton.addEventListener('click', function() {
             Promise.all([
-                $.ajax({url: 'flow-manager/flow-names'}),
-                $.ajax({url: 'flow-manager/filter-flows'}).catch(e=>Promise.resolve([]))
+                ajax({url: 'flow-manager/flow-names'}),
+                ajax({url: 'flow-manager/filter-flows'}).catch(e=>Promise.resolve([]))
             ]).then(([flowsArray, flowsFromConfig])=>{
-
                 flowsToLoad = flowsFromConfig;
 
                 const $selectEl = $('#flow-manager-flows-dialog-options');
@@ -213,7 +213,7 @@
             }).catch(alert);
         });
 
-        const flowManagerCfg = await $.ajax({url: 'flow-manager/cfg'});
+        const flowManagerCfg = await ajax({url: 'flow-manager/cfg'});
         if(flowManagerCfg?.remoteDeploy) {
             const _nr1Header = $('ul.red-ui-header-toolbar');
             if(_nr1Header.length) {
@@ -225,7 +225,7 @@
                     </li>
                     `);
             } else {
-                    $('.header-toolbar').prepend(`
+                $('.header-toolbar').prepend(`
                     <span>
                         <span>
                             <button class="toolbar-button flow-manager-remote-button"><i class="fa fa-rocket"></i> Remote Deploy</button>
@@ -239,8 +239,8 @@
             <div id="flow-manager-remote-dialog" style="width: 100%; text-align: center">
                 <p>
                     ${flowManagerCfg.remoteDeploy.remotes.map(remote=>{
-                        return `<button class="flow-manager-remote-option">${remote.name}</button><br/><br/>`
-                    })}
+                return `<button class="flow-manager-remote-option">${remote.name}</button><br/><br/>`
+            })}
                     </ol>
                 </p>
             </div>`);
@@ -339,12 +339,12 @@
                     try {
                         $('#flow-manager-push-progress-label').text(`${action}ing ${flowType} ${flowName||''}`);
 
-                        await $.ajax({
+                        await ajax({
                             url: remoteUrl,
                             ...(action==='POST'?
                                 {
                                     contentType: "text/plain",
-                                    data: await $.ajax({url: localUrl, headers:{accept:'text/plain'}})
+                                    data: await ajax({url: localUrl, headers:{accept:'text/plain'}})
                                 }
                                 :{}),
                             type: action
@@ -359,7 +359,7 @@
                 if(remoteNameToDeploy) {
                     $('#flow-manager-push-progress-label').text(`Deploying changes to ${remoteNameToDeploy}...`);
                     try {
-                        await $.ajax({
+                        await ajax({
                             url: `flow-manager/remotes/${remoteNameToDeploy}/states`,
                             method: 'POST',
                             data: JSON.stringify({"action":"reloadOnly"}),
@@ -388,7 +388,7 @@
 
                     const allFlowFileNamesFromBoth =
                         flowType === 'global'? ["global"]:
-                        new Set([...Object.keys(opts.localState[flowType]), ...Object.keys(opts.remoteState[flowType])]);
+                            new Set([...Object.keys(opts.localState[flowType]), ...Object.keys(opts.remoteState[flowType])]);
 
                     allFlowFileNamesFromBoth.forEach(flowName=>{
 
@@ -491,7 +491,7 @@
 
                 try  {
                     progressLabel.text('Retrieving Local State');
-                    const localState = await $.ajax({url: 'flow-manager/states'});
+                    const localState = await ajax({url: 'flow-manager/states'});
                     progressBar.progressbar({value: 50});
 
                     progressLabel.text('Retrieving Remote State');
@@ -499,7 +499,7 @@
                     try {
                         const remoteStatesUrl = `flow-manager/remotes/${remoteName}/states`;
 
-                        const remoteState = await $.ajax({url: remoteStatesUrl});
+                        const remoteState = await ajax({url: remoteStatesUrl});
                         $('#flow-manager-remote-dialog').dialog('close');
 
                         progressBar.progressbar({value: 100});
@@ -520,5 +520,5 @@
                 progressDialog.dialog('close');
             });
         }
-    })
+    })()
 </script>
