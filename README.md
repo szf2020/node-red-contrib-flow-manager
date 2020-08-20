@@ -97,6 +97,7 @@ module.exports = async function() {
 ```
 
 Attempting to change any envnode controlled property via Node-RED UI/AdminAPI will be cancelled (with a warning popup) to keep original values defined in your envnodes configuration.
+
 ![EnvNodes Warning](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.1/img/envnodes_warning.png)
 
 ### Remote Deploy
