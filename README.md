@@ -2,7 +2,7 @@
 
 Flow Manager separates your flow json to multiple files
 
-[View change log](https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.1/CHANGELOG.md)
+[View change log](https://stackedit.io/viewer#!url=https://gitlab.com/monogoto.io/node-red-contrib-flow-manager/-/raw/0.7.1/CHANGELOG.md)
 
 ### Installation
 

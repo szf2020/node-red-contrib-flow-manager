@@ -459,51 +459,54 @@ async function main() {
         // Loading ENV configuration for nodes
         directories.nodesEnvConfig = {};
         const envNodeResolutionPromises = [];
-        for(const envNodeFileName of await fs.readdir(directories.envNodesDir)) {
-            const ext = envNodeFileName.substring(envNodeFileName.lastIndexOf('.')+1);
-            const fileExtIndex = ["jsonata", "json", "js"].indexOf(ext);
-            if(fileExtIndex === -1) continue;
+        try { // envnodes dir is optional
+            for(const envNodeFileName of await fs.readdir(directories.envNodesDir)) {
+                const ext = envNodeFileName.substring(envNodeFileName.lastIndexOf('.')+1);
+                const fileExtIndex = ["jsonata", "json", "js"].indexOf(ext);
+                if(fileExtIndex === -1) continue;
 
-            envNodeResolutionPromises.push((async ()=>{
-                const absoluteFilePath = path.resolve(directories.envNodesDir, envNodeFileName);
+                envNodeResolutionPromises.push((async ()=>{
+                    const absoluteFilePath = path.resolve(directories.envNodesDir, envNodeFileName);
 
-                let result = null;
-                try {
-                    switch (fileExtIndex) {
-                        case 0: { // jsonata
-                            const fileContents = await fs.readFile(absoluteFilePath, 'UTF-8');
-                            result = jsonata(fileContents).evaluate({
-                                require: require,
-                                basePath: directories.basePath
-                            });
-                            break
-                        } case 1: {
-                            const fileContents = await fs.readFile(absoluteFilePath, 'UTF-8');
-                            result = JSON.parse(fileContents);
-                            break
-                        } case 2: {
-                            const jsFile = require(absoluteFilePath);
-                            if(isObject(jsFile)) {
-                                result = jsFile;
-                            } else if(typeof jsFile === 'function') {
-                                const returnedVal = jsFile(RED);
-                                if(returnedVal instanceof Promise) {
-                                    result = await returnedVal;
-                                } else {
-                                    result = returnedVal;
+                    let result = null;
+                    try {
+                        switch (fileExtIndex) {
+                            case 0: { // jsonata
+                                const fileContents = await fs.readFile(absoluteFilePath, 'UTF-8');
+                                result = jsonata(fileContents).evaluate({
+                                    require: require,
+                                    basePath: directories.basePath
+                                });
+                                break
+                            } case 1: {
+                                const fileContents = await fs.readFile(absoluteFilePath, 'UTF-8');
+                                result = JSON.parse(fileContents);
+                                break
+                            } case 2: {
+                                const jsFile = require(absoluteFilePath);
+                                if(isObject(jsFile)) {
+                                    result = jsFile;
+                                } else if(typeof jsFile === 'function') {
+                                    const returnedVal = jsFile(RED);
+                                    if(returnedVal instanceof Promise) {
+                                        result = await returnedVal;
+                                    } else {
+                                        result = returnedVal;
+                                    }
                                 }
+                                break
                             }
-                            break
                         }
+
+                    } catch(e) {
+                        nodeLogger.error('JSONata parsing failed for env nodes:\n', e);
                     }
 
-                } catch(e) {
-                    nodeLogger.error('JSONata parsing failed for env nodes:\n', e);
-                }
+                    return result;
+                })());
+            }
+        } catch (e) {}
 
-                return result;
-            })());
-        }
         const results = await Promise.all(envNodeResolutionPromises);
         results.forEach(result=>{Object.assign(directories.nodesEnvConfig, result)});
 

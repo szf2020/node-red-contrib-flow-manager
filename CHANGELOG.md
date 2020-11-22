@@ -1,3 +1,7 @@
+#### 0.7.2 Important bug fix
+
+- `envnodes` directory is optional.
+
 #### 0.7.1 Fix for older Node-REDs
 
 - Fixed missing flow-manager button for Node-RED versions below 1.0.0
