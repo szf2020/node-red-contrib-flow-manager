@@ -343,8 +343,8 @@ const onDemandFlowsManager = {
 
 async function readActiveProject() {
     try {
-        const redConfig = await fs.readJson(path.join(RED.settings.userDir, '.config.json'));
-        return redConfig.projects.activeProject;
+        const projects = RED.settings.get('projects');
+        return projects.activeProject;
     } catch (e) {
         return null;
     }
